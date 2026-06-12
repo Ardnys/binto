@@ -65,15 +65,14 @@ impl GithubClient {
 
         self.check_rate_limit(&resp);
 
-        if resp.status() == reqwest::StatusCode::FORBIDDEN {
-            if let Some(reset) = resp
+        if resp.status() == reqwest::StatusCode::FORBIDDEN
+            && let Some(reset) = resp
                 .headers()
                 .get("x-ratelimit-reset")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
-            {
-                bail!(crate::error::GhrError::RateLimitExceeded { reset_time: reset });
-            }
+        {
+            bail!(crate::error::GhrError::RateLimitExceeded { reset_time: reset });
         }
 
         if !resp.status().is_success() {
@@ -113,15 +112,14 @@ impl GithubClient {
             return Ok(ConditionalResult::NotModified);
         }
 
-        if resp.status() == reqwest::StatusCode::FORBIDDEN {
-            if let Some(reset) = resp
+        if resp.status() == reqwest::StatusCode::FORBIDDEN
+            && let Some(reset) = resp
                 .headers()
                 .get("x-ratelimit-reset")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
-            {
-                bail!(crate::error::GhrError::RateLimitExceeded { reset_time: reset });
-            }
+        {
+            bail!(crate::error::GhrError::RateLimitExceeded { reset_time: reset });
         }
 
         if !resp.status().is_success() {
@@ -156,17 +154,17 @@ impl GithubClient {
             .get("x-ratelimit-remaining")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u32>().ok())
+            && remaining < 10
+            && remaining > 0
         {
-            if remaining < 10 && remaining > 0 {
-                let hint = if self.token.is_none() {
-                    " Set GITHUB_TOKEN to increase the limit."
-                } else {
-                    ""
-                };
-                crate::output::print_warning(&format!(
-                    "GitHub API rate limit almost exhausted ({remaining} requests remaining).{hint}"
-                ));
-            }
+            let hint = if self.token.is_none() {
+                " Set GITHUB_TOKEN to increase the limit."
+            } else {
+                ""
+            };
+            crate::output::print_warning(&format!(
+                "GitHub API rate limit almost exhausted ({remaining} requests remaining).{hint}"
+            ));
         }
     }
 }

@@ -75,7 +75,7 @@ fn foreign_arch_terms(user_canonical: &str) -> Vec<&'static str> {
 fn canonical_arch(raw: &str) -> &'static str {
     let raw = raw.trim().to_lowercase();
     for (canonical, syns) in ARCH_SYNONYMS {
-        if syns.iter().any(|s| *s == raw.as_str()) {
+        if syns.contains(&raw.as_str()) {
             return canonical;
         }
     }

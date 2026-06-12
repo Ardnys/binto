@@ -57,7 +57,7 @@ impl State {
 
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, raw).with_context(|| format!("failed to write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).with_context(|| format!("failed to rename state file"))?;
+        std::fs::rename(&tmp, &path).with_context(|| "failed to rename state file".to_string())?;
 
         Ok(())
     }

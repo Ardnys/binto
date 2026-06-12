@@ -136,15 +136,15 @@ fn maybe_print_stale_banner(config: &Config) {
 async fn cmd_install(repo: &str, include_prerelease: bool, config: &Config) -> Result<()> {
     // Check for an already-managed tool with the same repo before doing any network I/O.
     let mut state = State::load()?;
-    let binary_name = repo.split('/').last().unwrap_or(repo);
-    if let Some(existing) = state.tools.get(binary_name) {
-        if existing.repo == repo {
-            anyhow::bail!(
-                "'{binary_name}' is already managed by ghr ({}). \
+    let binary_name = repo.split('/').next_back().unwrap_or(repo);
+    if let Some(existing) = state.tools.get(binary_name)
+        && existing.repo == repo
+    {
+        anyhow::bail!(
+            "'{binary_name}' is already managed by ghr ({}). \
                  Run `ghr update {binary_name}` to upgrade it.",
-                existing.installed_tag
-            );
-        }
+            existing.installed_tag
+        );
     }
 
     // Check if the binary already exists somewhere on $PATH outside of ghr.

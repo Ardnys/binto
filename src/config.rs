@@ -64,10 +64,10 @@ impl Config {
             toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
 
         // Expand ~ in install_dir
-        if let Ok(stripped) = config.install_dir.strip_prefix("~") {
-            if let Some(home) = dirs::home_dir() {
-                config.install_dir = home.join(stripped);
-            }
+        if let Ok(stripped) = config.install_dir.strip_prefix("~")
+            && let Some(home) = dirs::home_dir()
+        {
+            config.install_dir = home.join(stripped);
         }
 
         // Empty string token → None
@@ -87,10 +87,10 @@ impl Config {
 
         // Store install_dir with ~ for readability
         let mut display = self.clone();
-        if let Some(home) = dirs::home_dir() {
-            if let Ok(rel) = display.install_dir.strip_prefix(&home) {
-                display.install_dir = PathBuf::from("~").join(rel);
-            }
+        if let Some(home) = dirs::home_dir()
+            && let Ok(rel) = display.install_dir.strip_prefix(&home)
+        {
+            display.install_dir = PathBuf::from("~").join(rel);
         }
 
         let raw = toml::to_string_pretty(&display).context("failed to serialize config")?;
