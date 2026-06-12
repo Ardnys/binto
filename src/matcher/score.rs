@@ -160,7 +160,7 @@ pub fn score_and_rank(assets: Vec<Asset>, user_arch: &str) -> Vec<ScoredAsset> {
         .filter(|s| s.score.total > 0)
         .collect();
 
-    scored.sort_by(|a, b| b.score.total.cmp(&a.score.total));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.score.total));
     scored
 }
 
