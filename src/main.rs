@@ -181,6 +181,7 @@ fn cmd_list(json: bool, _config: &Config) -> Result<()> {
         return Ok(());
     }
 
+    // TODO: it would be nice if the table was more intelligent
     // Table header
     println!(
         "{:<20} {:<15} {:<30} {}",

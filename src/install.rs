@@ -5,14 +5,14 @@ use anyhow::Result;
 use crate::config::{self, Config};
 use crate::github::GithubClient;
 use crate::github::types::Release;
-use crate::installer::{self, InstallResult};
+use crate::installer::{self, InstallResult, InstallSpec, default_binary_name};
 use crate::manifest::Manifest;
 use crate::matcher::score::detect_arch;
 use crate::output::{print_info, print_success, print_warning};
 use crate::picker;
 use crate::state::State;
 
-/// How `resolve_and_install` should choose which release to install.
+/// How an [`InstallRequest`] should choose which release to install.
 pub enum ReleaseSelection {
     /// Install this exact tag (version pinning). Resolved via `get_release_by_tag`.
     Tag(String),
@@ -30,77 +30,80 @@ fn filter_releases(releases: &mut Vec<Release>, include_prerelease: bool, config
     }
 }
 
-// TODO: Installation is getting complicated. It needs an abstraction
+/// A high-level "install this repo" request: everything needed to go from a repo identity to
+/// an installed, state-tracked tool. The unifying entry point for both `install` and `sync`.
+pub struct InstallRequest<'a> {
+    pub repo: &'a str,
+    pub selection: ReleaseSelection,
+    pub install_dir: &'a Path,
+    pub alias: Option<&'a str>,
+    pub include_prerelease: bool,
+}
 
-/// Shared install core for both `install` and `sync`: resolve a `Release` per `selection`,
-/// pick the matching asset, download + install it, and upsert the result into `state`.
-/// Does NOT save state or touch the manifest — callers own that so they can batch writes.
-#[allow(clippy::too_many_arguments)]
-pub async fn resolve_and_install(
-    client: &GithubClient,
-    repo: &str,
-    selection: ReleaseSelection,
-    include_prerelease: bool,
-    config: &Config,
-    install_dir: &Path,
-    alias: Option<&str>,
-    state: &mut State,
-) -> Result<InstallResult> {
-    let release = match selection {
-        ReleaseSelection::Tag(tag) => client.get_release_by_tag(repo, &tag).await?,
-        ReleaseSelection::Latest => {
-            let mut releases = client.list_releases(repo).await?;
-            filter_releases(&mut releases, include_prerelease, config);
-            releases
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("no releases found for {repo}"))?
+impl InstallRequest<'_> {
+    /// Resolve the release per `selection`, pick the matching asset, download + install it,
+    /// and upsert the result into `state`. Does NOT save state or touch the manifest — callers
+    /// own that so they can batch writes.
+    pub async fn execute(
+        self,
+        client: &GithubClient,
+        config: &Config,
+        state: &mut State,
+    ) -> Result<InstallResult> {
+        let release = self.resolve_release(client, config).await?;
+
+        let user_arch = detect_arch();
+        let asset = picker::select_asset(&release, &user_arch, None, self.repo, "Pick an asset")?;
+
+        let install_name = self.alias.unwrap_or_else(|| default_binary_name(self.repo));
+        let pb = installer::download::make_progress_bar(None, asset.size, install_name, None);
+
+        let mut builder =
+            InstallSpec::builder(self.repo, &release, &asset).install_dir(self.install_dir);
+        if let Some(alias) = self.alias {
+            builder = builder.install_name(alias);
         }
-        ReleaseSelection::InteractivePick => {
-            let mut releases = client.list_releases(repo).await?;
-            filter_releases(&mut releases, include_prerelease, config);
-            if releases.is_empty() {
-                anyhow::bail!("no releases found for {repo}");
+        let result = builder.build().run(client.http_client(), pb).await?;
+
+        state.upsert(result.tool_entry.clone());
+        Ok(result)
+    }
+
+    async fn resolve_release(&self, client: &GithubClient, config: &Config) -> Result<Release> {
+        let release = match &self.selection {
+            ReleaseSelection::Tag(tag) => client.get_release_by_tag(self.repo, tag).await?,
+            ReleaseSelection::Latest => {
+                let mut releases = client.list_releases(self.repo).await?;
+                filter_releases(&mut releases, self.include_prerelease, config);
+                releases
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("no releases found for {}", self.repo))?
             }
+            ReleaseSelection::InteractivePick => {
+                let mut releases = client.list_releases(self.repo).await?;
+                filter_releases(&mut releases, self.include_prerelease, config);
+                if releases.is_empty() {
+                    anyhow::bail!("no releases found for {}", self.repo);
+                }
 
-            let labels: Vec<String> = releases
-                .iter()
-                .map(|r| format!("{} ({})", r.tag_name, r.published_at.format("%Y-%m-%d")))
-                .collect();
-            let idx = dialoguer::FuzzySelect::new()
-                .with_prompt("Pick a release")
-                .items(&labels)
-                .default(0)
-                .interact()?;
+                let labels: Vec<String> = releases
+                    .iter()
+                    .map(|r| format!("{} ({})", r.tag_name, r.published_at.format("%Y-%m-%d")))
+                    .collect();
+                let idx = dialoguer::FuzzySelect::new()
+                    .with_prompt("Pick a release")
+                    .items(&labels)
+                    .default(0)
+                    .interact()?;
 
-            let release = releases.swap_remove(idx);
-            println!("Selected: {} — {}", release.tag_name, release.html_url);
-            release
-        }
-    };
-
-    let user_arch = detect_arch();
-    let asset = picker::select_asset(&release, &user_arch, None, repo, "Pick an asset")?;
-
-    // `find_name` locates the binary inside the archive (repo-derived, unaffected by alias);
-    // `install_name` is the filename + state key, overridden by `--alias` when given.
-    let find_name = repo.split('/').next_back().unwrap_or(repo);
-    let install_name = alias.unwrap_or(find_name);
-
-    let pb = installer::download::make_progress_bar(None, asset.size, install_name, None);
-    let result = installer::install_asset(
-        client.http_client(),
-        repo,
-        &release,
-        &asset,
-        install_name,
-        install_dir,
-        pb,
-    )
-    .await?;
-
-    state.upsert(result.tool_entry.clone());
-    Ok(result)
+                let release = releases.swap_remove(idx);
+                println!("Selected: {} — {}", release.tag_name, release.html_url);
+                release
+            }
+        };
+        Ok(release)
+    }
 }
 
 /// `ghr install <owner/repo> [-t <tag>]`. Pins to `tag` when given (and records the pin in
@@ -124,10 +127,9 @@ pub async fn cmd_install(
     // Look for an already-managed tool under its install name (the `--alias`, or the
     // repo-derived default) before doing any network I/O.
     let mut state = State::load()?;
-    let install_name = match alias.as_deref() {
-        Some(a) => a,
-        None => repo.split('/').next_back().unwrap_or(repo),
-    };
+    let install_name = alias
+        .as_deref()
+        .unwrap_or_else(|| default_binary_name(repo));
     let already_managed = state
         .get(install_name)
         .is_some_and(|existing| existing.repo == repo);
@@ -174,16 +176,14 @@ pub async fn cmd_install(
         None => ReleaseSelection::InteractivePick,
     };
 
-    let result = resolve_and_install(
-        &client,
+    let result = InstallRequest {
         repo,
         selection,
+        install_dir: &install_dir,
+        alias: alias.as_deref(),
         include_prerelease,
-        config,
-        &install_dir,
-        alias.as_deref(),
-        &mut state,
-    )
+    }
+    .execute(&client, config, &mut state)
     .await?;
     state.save()?;
 

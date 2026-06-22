@@ -55,165 +55,230 @@ pub struct InstallResult {
     pub installed_path: PathBuf,
 }
 
+// TODO: check if we do too much string operations on repo. It could be its own type then.
+/// The repo-derived default name for a tool: the segment after `owner/`. Used both to locate
+/// the binary inside an archive and as the installed filename when no `--alias` is given.
+pub fn default_binary_name(repo: &str) -> &str {
+    repo.split('/').next_back().unwrap_or(repo)
+}
+
 pub struct Downloaded {
     pub asset_path: PathBuf,
     pub sha256: Option<String>,
     guard: InstallGuard,
 }
 
-pub async fn download_and_verify(
-    client: &reqwest::Client,
-    asset: &Asset,
-    all_assets: &[Asset],
-    pb: ProgressBar,
-) -> Result<Downloaded> {
-    let mut guard = InstallGuard::new();
+impl Downloaded {
+    /// Download the asset into the cache and checksum-verify it. Concurrency-safe —
+    /// the `update --all` fan-out clones the asset into each task and calls this directly,
+    /// since a borrowing `InstallSpec` method can't satisfy the `'static` bound on spawned
+    /// futures. Sequential callers go through `InstallSpec::download`.
+    pub async fn fetch(
+        client: &reqwest::Client,
+        asset: &Asset,
+        all_assets: &[Asset],
+        pb: ProgressBar,
+    ) -> Result<Downloaded> {
+        let mut guard = InstallGuard::new();
 
-    let asset_path =
-        download::download_to_cache(client, &asset.browser_download_url, &asset.name, pb.clone())
-            .await
-            .with_context(|| format!("failed to download {}", asset.name))?;
-    guard.track_file(asset_path.clone());
+        let asset_path = download::download_to_cache(
+            client,
+            &asset.browser_download_url,
+            &asset.name,
+            pb.clone(),
+        )
+        .await
+        .with_context(|| format!("failed to download {}", asset.name))?;
+        guard.track_file(asset_path.clone());
 
-    let installed_sha256 =
-        if let Some(chk_asset) = checksum::find_checksum_asset(&asset.name, all_assets) {
-            pb.set_message("verifying...");
-            match checksum::verify_checksum(
-                client,
-                &asset_path,
-                &asset.name,
-                &chk_asset.browser_download_url,
-            )
-            .await
-            {
-                Ok(hash) => {
-                    pb.finish_with_message("verified");
-                    Some(hash)
+        let installed_sha256 =
+            if let Some(chk_asset) = checksum::find_checksum_asset(&asset.name, all_assets) {
+                pb.set_message("verifying...");
+                match checksum::verify_checksum(
+                    client,
+                    &asset_path,
+                    &asset.name,
+                    &chk_asset.browser_download_url,
+                )
+                .await
+                {
+                    Ok(hash) => {
+                        pb.finish_with_message("verified");
+                        Some(hash)
+                    }
+                    Err(e) => {
+                        pb.finish_with_message("checksum failed");
+                        return Err(e);
+                    }
                 }
-                Err(e) => {
-                    pb.finish_with_message("checksum failed");
-                    return Err(e);
+            } else {
+                pb.finish_with_message("done");
+                checksum::sha256_file(&asset_path).ok()
+            };
+
+        Ok(Downloaded {
+            asset_path,
+            sha256: installed_sha256,
+            guard,
+        })
+    }
+}
+
+/// A fully-resolved installation: a concrete release + asset, the directory to install into,
+/// and the resolved name split. Bundles everything the download → install pipeline needs so
+/// callers pass no loose parameters. Build via [`InstallSpec::builder`].
+pub struct InstallSpec<'a> {
+    repo: &'a str,
+    release: &'a Release,
+    asset: &'a Asset,
+    install_dir: &'a Path,
+    /// Locates the binary *inside* an archive (exact-match then single-ELF fallback).
+    /// Repo-derived, never the alias.
+    find_name: String,
+    /// The installed filename and the key the tool is tracked by in state — the `--alias`
+    /// (or a managed tool's existing `binary_name`), else the repo-derived default.
+    install_name: String,
+}
+
+/// Builder for [`InstallSpec`]. `install_dir` is required; `install_name` defaults to the
+/// repo-derived name when not set.
+pub struct InstallSpecBuilder<'a> {
+    repo: &'a str,
+    release: &'a Release,
+    asset: &'a Asset,
+    install_dir: Option<&'a Path>,
+    install_name: Option<String>,
+}
+
+impl<'a> InstallSpec<'a> {
+    pub fn builder(
+        repo: &'a str,
+        release: &'a Release,
+        asset: &'a Asset,
+    ) -> InstallSpecBuilder<'a> {
+        InstallSpecBuilder {
+            repo,
+            release,
+            asset,
+            install_dir: None,
+            install_name: None,
+        }
+    }
+}
+
+impl<'a> InstallSpecBuilder<'a> {
+    pub fn install_dir(mut self, dir: &'a Path) -> Self {
+        self.install_dir = Some(dir);
+        self
+    }
+
+    /// Override the installed name (alias, or a managed tool's tracked `binary_name`).
+    pub fn install_name(mut self, name: impl Into<String>) -> Self {
+        self.install_name = Some(name.into());
+        self
+    }
+
+    /// Resolve the name split and finalize the spec. Panics if `install_dir` was never set.
+    pub fn build(self) -> InstallSpec<'a> {
+        let find_name = default_binary_name(self.repo);
+        let install_name = self.install_name.unwrap_or_else(|| find_name.to_string());
+        InstallSpec {
+            repo: self.repo,
+            release: self.release,
+            asset: self.asset,
+            install_dir: self
+                .install_dir
+                .expect("InstallSpecBuilder::install_dir must be set before build"),
+            find_name: find_name.to_string(),
+            install_name,
+        }
+    }
+}
+
+impl InstallSpec<'_> {
+    /// Download + verify. Thin wrapper over [`Downloaded::fetch`] for sequential
+    /// callers; the concurrent updater calls `Downloaded::fetch` directly.
+    pub async fn download(&self, client: &reqwest::Client, pb: ProgressBar) -> Result<Downloaded> {
+        Downloaded::fetch(client, self.asset, &self.release.assets, pb).await
+    }
+
+    /// Extract (or treat as a raw binary), locate the binary, atomic-install it, and
+    /// build the resulting `ToolEntry`. Sequential — may show the interactive binary picker.
+    pub fn install(&self, mut dl: Downloaded) -> Result<InstallResult> {
+        // Detect archive by filename extension first; fall back to content_type for assets
+        // with no extension.
+        let asset_lower = self.asset.name.to_lowercase();
+        let ct = self.asset.content_type.to_lowercase();
+        let is_archive = asset_lower.ends_with(".tar.gz")
+            || asset_lower.ends_with(".tgz")
+            || asset_lower.ends_with(".tar.xz")
+            || asset_lower.ends_with(".tar.bz2")
+            || asset_lower.ends_with(".zip")
+            || ct.contains("gzip")
+            || ct.contains("x-tar")
+            || ct.contains("x-xz")
+            || ct.contains("x-bzip2")
+            || ct == "application/zip";
+
+        let binary_src = if is_archive {
+            let extract_dir = download::cache_dir().join(format!("{}-extract", self.asset.name));
+            dl.guard.track_dir(extract_dir.clone());
+
+            print_info("Extracting archive...");
+            extract::extract_archive(&dl.asset_path, &extract_dir)?;
+
+            // Locate binary inside the extracted tree
+            match find_binary(&extract_dir, &self.find_name)? {
+                BinarySearchResult::Found(p) => p,
+                BinarySearchResult::Multiple(candidates) => {
+                    let names: Vec<String> =
+                        candidates.iter().map(|p| p.display().to_string()).collect();
+                    let selection = dialoguer::Select::new()
+                        .with_prompt("Multiple binaries found — pick one")
+                        .items(&names)
+                        .default(0)
+                        .interact()
+                        .context("failed to show binary picker")?;
+                    candidates.into_iter().nth(selection).unwrap()
+                }
+                BinarySearchResult::NotFound => {
+                    return Err(GhrError::BinaryNotFoundInArchive.into());
                 }
             }
         } else {
-            pb.finish_with_message("done");
-            checksum::sha256_file(&asset_path).ok()
+            dl.asset_path.clone()
         };
 
-    Ok(Downloaded {
-        asset_path,
-        sha256: installed_sha256,
-        guard,
-    })
-}
+        // chmod + atomic install
+        let installed_path =
+            binary::atomic_install(&binary_src, self.install_dir, &self.install_name)?;
 
-/// `find_name` is used to locate the binary *inside* an archive (repo-derived default,
-/// exact-match then single-ELF fallback). `install_name` is the filename the binary is
-/// installed under and the key it's tracked by in state — it differs from `find_name` only
-/// when the user passes `--alias`. With no alias, callers pass the same value for both.
-pub async fn extract_and_install(
-    mut dl: Downloaded,
-    asset: &Asset,
-    release: &Release,
-    repo: &str,
-    find_name: &str,
-    install_name: &str,
-    install_dir: &Path,
-) -> Result<InstallResult> {
-    // Step 3: Extract archive (or treat as raw binary)
-    // Detect by filename extension first; fall back to content_type for assets with no extension.
-    let asset_lower = asset.name.to_lowercase();
-    let ct = asset.content_type.to_lowercase();
-    let is_archive = asset_lower.ends_with(".tar.gz")
-        || asset_lower.ends_with(".tgz")
-        || asset_lower.ends_with(".tar.xz")
-        || asset_lower.ends_with(".tar.bz2")
-        || asset_lower.ends_with(".zip")
-        || ct.contains("gzip")
-        || ct.contains("x-tar")
-        || ct.contains("x-xz")
-        || ct.contains("x-bzip2")
-        || ct == "application/zip";
+        let asset_pattern = asset_to_pattern(&self.asset.name, &self.release.tag_name);
 
-    let binary_src = if is_archive {
-        let extract_dir = download::cache_dir().join(format!("{}-extract", asset.name));
-        dl.guard.track_dir(extract_dir.clone());
+        let tool_entry = ToolEntry {
+            repo: self.repo.to_string(),
+            installed_tag: self.release.tag_name.clone(),
+            install_path: installed_path.clone(),
+            binary_name: self.install_name.clone(),
+            asset_pattern,
+            installed_sha256: dl.sha256.clone(),
+            etag: None,
+            last_checked: Some(Utc::now()),
+            published_at: Some(self.release.published_at),
+        };
 
-        print_info("Extracting archive...");
-        extract::extract_archive(&dl.asset_path, &extract_dir)?;
+        // Guard drops here. Temp files are removed (guard owns asset_path clone, not
+        // installed_path).
+        Ok(InstallResult {
+            tool_entry,
+            installed_path,
+        })
+    }
 
-        // Locate binary inside the extracted tree
-        match find_binary(&extract_dir, find_name)? {
-            BinarySearchResult::Found(p) => p,
-            BinarySearchResult::Multiple(candidates) => {
-                let names: Vec<String> =
-                    candidates.iter().map(|p| p.display().to_string()).collect();
-                let selection = dialoguer::Select::new()
-                    .with_prompt("Multiple binaries found — pick one")
-                    .items(&names)
-                    .default(0)
-                    .interact()
-                    .context("failed to show binary picker")?;
-                candidates.into_iter().nth(selection).unwrap()
-            }
-            BinarySearchResult::NotFound => {
-                return Err(GhrError::BinaryNotFoundInArchive.into());
-            }
-        }
-    } else {
-        dl.asset_path.clone()
-    };
-
-    // Step 4+5: chmod + atomic install
-    let installed_path = binary::atomic_install(&binary_src, install_dir, install_name)?;
-
-    // Step 6: Build ToolEntry
-    let asset_pattern = asset_to_pattern(&asset.name, &release.tag_name);
-
-    let tool_entry = ToolEntry {
-        repo: repo.to_string(),
-        installed_tag: release.tag_name.clone(),
-        install_path: installed_path.clone(),
-        binary_name: install_name.to_string(),
-        asset_pattern,
-        installed_sha256: dl.sha256.clone(),
-        etag: None,
-        last_checked: Some(Utc::now()),
-        published_at: Some(release.published_at),
-    };
-
-    // Guard drops here — temp files are removed (guard owns asset_path clone, not installed_path)
-    Ok(InstallResult {
-        tool_entry,
-        installed_path,
-    })
-}
-
-/// Convenience wrapper that runs both install phases back-to-back for the simple
-/// single-tool callers (install / single update). The concurrent updater calls
-/// `download_and_verify` and `extract_and_install` directly to interleave phases.
-#[allow(clippy::too_many_arguments)]
-pub async fn install_asset(
-    client: &reqwest::Client,
-    repo: &str,
-    release: &Release,
-    asset: &Asset,
-    install_name: &str,
-    install_dir: &std::path::Path,
-    pb: ProgressBar,
-) -> Result<InstallResult> {
-    let find_name = repo.split('/').next_back().unwrap_or(repo);
-    let all_assets = &release.assets;
-    let dl = download_and_verify(client, asset, all_assets, pb).await?;
-    let install_res = extract_and_install(
-        dl,
-        asset,
-        release,
-        repo,
-        find_name,
-        install_name,
-        install_dir,
-    )
-    .await?;
-    Ok(install_res)
+    /// Both phases back-to-back, for the simple single-tool callers (install / sync / single
+    /// update). The concurrent updater interleaves the phases by hand instead.
+    pub async fn run(&self, client: &reqwest::Client, pb: ProgressBar) -> Result<InstallResult> {
+        let dl = self.download(client, pb).await?;
+        self.install(dl)
+    }
 }

@@ -9,13 +9,15 @@ use crate::config::Config;
 use crate::github::api::{ApiResponse, ConditionalResult, GithubClient};
 use crate::github::types::{Asset, Release};
 use crate::installer::download::make_progress_bar;
+use crate::installer::{Downloaded, InstallSpec};
 use crate::manifest::Manifest;
 use crate::output::{print_info, print_success, print_warning};
 use crate::picker::select_asset;
 use crate::state::{State, ToolEntry};
 
-// TODO: all of PendingUpdate's arguments are passed to `extract_and_install`.
-// Instead we could have an impl for this one
+/// Carries a tool's state across the concurrent updater's phase boundary: the download phase
+/// (fanned out) produces a `Downloaded` keyed by `name`, which the sequential install phase
+/// pairs back up here to build an `InstallSpec`.
 struct PendingUpdate {
     name: String,
     entry: ToolEntry,
@@ -142,7 +144,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     let mp = MultiProgress::new();
     let http = client.http_client().clone();
     let mut pending_map: HashMap<String, PendingUpdate> = HashMap::new();
-    let mut dl_set: JoinSet<(String, Result<crate::installer::Downloaded>)> = JoinSet::new();
+    let mut dl_set: JoinSet<(String, Result<Downloaded>)> = JoinSet::new();
     let longest_name = pending.iter().map(|p| p.name.len()).max().unwrap_or(0);
 
     for p in pending {
@@ -152,14 +154,13 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         let asset = p.asset.clone();
         let all_assets = p.release.assets.clone();
         dl_set.spawn(async move {
-            let result =
-                crate::installer::download_and_verify(&http, &asset, &all_assets, pb).await;
+            let result = Downloaded::fetch(&http, &asset, &all_assets, pb).await;
             (task_name, result)
         });
         pending_map.insert(p.name.clone(), p);
     }
 
-    let mut downloads: Vec<(String, crate::installer::Downloaded)> = Vec::new();
+    let mut downloads: Vec<(String, Downloaded)> = Vec::new();
     while let Some(res) = dl_set.join_next().await {
         let (name, dl_result) = res?;
         match dl_result {
@@ -182,20 +183,13 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         let Some(p) = pending_map.remove(&name) else {
             continue;
         };
-        // The archive still ships the upstream-named binary; locate it by the repo-derived
-        // name, but (re)install under the tracked name — which may be an `--alias`.
-        let find_name = p.entry.repo.split('/').next_back().unwrap_or(&p.entry.repo);
-        match crate::installer::extract_and_install(
-            dl,
-            &p.asset,
-            &p.release,
-            &p.entry.repo,
-            find_name,
-            &p.entry.binary_name,
-            &p.install_dir,
-        )
-        .await
-        {
+        // The archive still ships the upstream-named binary; the builder locates it by the
+        // repo-derived name, but (re)installs under the tracked name — which may be an `--alias`.
+        let spec = InstallSpec::builder(&p.entry.repo, &p.release, &p.asset)
+            .install_dir(&p.install_dir)
+            .install_name(&p.entry.binary_name)
+            .build();
+        match spec.install(dl) {
             Ok(ir) => {
                 state.upsert(ir.tool_entry.with_etag(p.new_etag));
                 print_success(&format!(
@@ -311,16 +305,12 @@ pub async fn cmd_update(
 
             // Locate the binary in the archive by its upstream name; reinstall under the
             // tracked name (which may be an `--alias`).
-            let result = crate::installer::install_asset(
-                client.http_client(),
-                &entry.repo,
-                &release,
-                &asset,
-                &entry.binary_name,
-                &install_dir,
-                pb,
-            )
-            .await?;
+            let result = InstallSpec::builder(&entry.repo, &release, &asset)
+                .install_dir(&install_dir)
+                .install_name(&entry.binary_name)
+                .build()
+                .run(client.http_client(), pb)
+                .await?;
 
             state.upsert(result.tool_entry.with_etag(new_etag));
             print_success(&format!(

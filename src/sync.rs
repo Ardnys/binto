@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use tokio::task::JoinSet;
 
 use crate::config::Config;
 use crate::github::GithubClient;
-use crate::install::{ReleaseSelection, resolve_and_install};
-use crate::manifest::Manifest;
+use crate::install::{InstallRequest, ReleaseSelection};
+use crate::manifest::{Manifest, ManifestEntry};
 use crate::output::{print_info, print_success, print_warning};
 use crate::state::State;
 
@@ -55,16 +56,14 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             }
         };
 
-        match resolve_and_install(
-            &client,
+        match (InstallRequest {
             repo,
             selection,
-            false,
-            config,
-            &config.install_dir,
-            entry.alias.as_deref(),
-            &mut state,
-        )
+            install_dir: &config.install_dir,
+            alias: entry.alias.as_deref(),
+            include_prerelease: false,
+        })
+        .execute(&client, config, &mut state)
         .await
         {
             Ok(result) => {

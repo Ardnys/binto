@@ -228,13 +228,15 @@ mod tests {
 
         // Typed view sees it.
         let m: Manifest = toml::from_str(&out).unwrap();
-        assert_eq!(m.get("BurntSushi/ripgrep").unwrap().alias.as_deref(), Some("rg"));
+        assert_eq!(
+            m.get("BurntSushi/ripgrep").unwrap().alias.as_deref(),
+            Some("rg")
+        );
     }
 
     #[test]
     fn re_pinning_preserves_comments_and_other_entries() {
-        let mut d = doc(
-            r#"# my tools
+        let mut d = doc(r#"# my tools
 
 [[tools]]
 repo = "BurntSushi/ripgrep"
@@ -242,10 +244,12 @@ repo = "BurntSushi/ripgrep"
 [[tools]]
 repo = "sharkdp/bat"
 tag = "v0.24.0"   # pinned: v0.25 broke theme
-"#,
-        );
+"#);
 
-        edit_tool(&mut d, "sharkdp/bat", |t| set_str(t, "tag", Some("v0.25.0"))).unwrap();
+        edit_tool(&mut d, "sharkdp/bat", |t| {
+            set_str(t, "tag", Some("v0.25.0"))
+        })
+        .unwrap();
 
         let out = d.to_string();
         // header comment, the untouched entry, and the inline comment all survive
@@ -263,13 +267,11 @@ tag = "v0.24.0"   # pinned: v0.25 broke theme
 
     #[test]
     fn clearing_pin_keeps_alias() {
-        let mut d = doc(
-            r#"[[tools]]
+        let mut d = doc(r#"[[tools]]
 repo = "BurntSushi/ripgrep"
 tag = "14.1.0"
 alias = "rg"
-"#,
-        );
+"#);
 
         edit_tool(&mut d, "BurntSushi/ripgrep", |t| set_str(t, "tag", None)).unwrap();
 
@@ -280,8 +282,7 @@ alias = "rg"
 
     #[test]
     fn remove_keeps_commented_block_and_comments() {
-        let mut d = doc(
-            r#"[[tools]]
+        let mut d = doc(r#"[[tools]]
 repo = "BurntSushi/ripgrep"
 
 # kept for later
@@ -290,8 +291,7 @@ repo = "BurntSushi/ripgrep"
 
 [[tools]]
 repo = "sharkdp/bat"
-"#,
-        );
+"#);
 
         assert!(remove_row(&mut d, "BurntSushi/ripgrep").unwrap());
 
@@ -309,11 +309,9 @@ repo = "sharkdp/bat"
 
     #[test]
     fn remove_absent_repo_reports_false() {
-        let mut d = doc(
-            r#"[[tools]]
+        let mut d = doc(r#"[[tools]]
 repo = "a/b"
-"#,
-        );
+"#);
         assert!(!remove_row(&mut d, "missing/repo").unwrap());
     }
 
