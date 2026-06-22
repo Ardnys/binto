@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+#[tracing::instrument(skip(dest_dir), fields(archive = %archive_path.display()), err(level = "debug"))]
 pub fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dest_dir)
         .with_context(|| format!("failed to create {}", dest_dir.display()))?;
@@ -76,6 +77,7 @@ const ELF_MAGIC: &[u8] = b"\x7fELF";
 /// 1. File named `binary_name` (exact match)
 /// 2. Single ELF file with executable bit
 /// 3. Multiple ELFs → return all for the caller to present a picker
+#[tracing::instrument(skip(dir), fields(binary = %binary_name), err(level = "debug"))]
 pub fn find_binary(dir: &Path, binary_name: &str) -> Result<BinarySearchResult> {
     let mut elf_files: Vec<PathBuf> = Vec::new();
 

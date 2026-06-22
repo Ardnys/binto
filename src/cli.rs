@@ -9,6 +9,14 @@ use clap::{Parser, Subcommand};
 )]
 #[command(version)]
 pub struct Cli {
+    /// Increase logging verbosity on the terminal (repeatable: -v debug, -vv trace)
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Only show warnings and errors on the terminal
+    #[arg(short = 'q', long, global = true)]
+    pub quiet: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

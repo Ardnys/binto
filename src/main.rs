@@ -6,6 +6,7 @@ mod error;
 mod github;
 mod install;
 mod installer;
+mod logging;
 mod manifest;
 mod matcher;
 mod output;
@@ -13,6 +14,7 @@ mod picker;
 mod state;
 mod sync;
 mod timer;
+mod ui_format;
 mod update;
 
 use anyhow::{Context, Result};
@@ -60,7 +62,7 @@ fn parse_repo(input: &str) -> Result<String> {
     }
 }
 use config::Config;
-use output::{print_error, print_info, print_success, print_warning};
+use output::{print_error, print_info, print_status, print_success, print_warning};
 use state::{State, ToolEntry};
 
 use crate::manifest::Manifest;
@@ -69,7 +71,12 @@ use crate::manifest::Manifest;
 async fn main() {
     install_ctrlc_handler();
 
-    if let Err(e) = run().await {
+    // Parse before any async/spawn so logging is live for the whole run. The worker guard must
+    // outlive every log call — hold it here until the process exits, or the file log truncates.
+    let cli = Cli::parse();
+    let _log_guard = logging::init(cli.verbose, cli.quiet);
+
+    if let Err(e) = run(cli).await {
         print_error(&e);
         std::process::exit(1);
     }
@@ -91,8 +98,7 @@ fn install_ctrlc_handler() {
     });
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> Result<()> {
     let config = Config::load()?;
 
     // Stale-check banner: warn if any tool hasn't been checked recently
@@ -157,13 +163,13 @@ fn maybe_print_stale_banner(config: &Config) {
         .count();
 
     if stale_count > 0 {
-        println!(
+        print_status(&format!(
             "{}",
             style(format!(
                 "{stale_count} tool(s) haven't been checked recently — run `ghr check`"
             ))
             .yellow()
-        );
+        ));
     }
 }
 

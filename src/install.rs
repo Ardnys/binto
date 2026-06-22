@@ -5,7 +5,7 @@ use anyhow::Result;
 use crate::config::{self, Config};
 use crate::github::GithubClient;
 use crate::github::types::Release;
-use crate::installer::{self, InstallResult, InstallSpec, default_binary_name};
+use crate::installer::{InstallResult, InstallSpec, default_binary_name};
 use crate::manifest::Manifest;
 use crate::matcher::score::detect_arch;
 use crate::output::{print_info, print_success, print_warning};
@@ -53,15 +53,12 @@ impl InstallRequest<'_> {
         let user_arch = detect_arch();
         let asset = picker::select_asset(&release, &user_arch, None, self.repo, "Pick an asset")?;
 
-        let install_name = self.alias.unwrap_or_else(|| default_binary_name(self.repo));
-        let pb = installer::download::make_progress_bar(None, asset.size, install_name, None);
-
         let mut builder =
             InstallSpec::builder(self.repo, &release, &asset).install_dir(self.install_dir);
         if let Some(alias) = self.alias {
             builder = builder.install_name(alias);
         }
-        let result = builder.build().run(client.http_client(), pb).await?;
+        let result = builder.build().run(client.http_client()).await?;
 
         state.upsert(result.tool_entry.clone());
         Ok(result)

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use indicatif::ProgressBar;
+use tracing::Instrument;
 
 use crate::error::GhrError;
 use crate::github::types::{Asset, Release};
@@ -77,23 +77,17 @@ impl Downloaded {
         client: &reqwest::Client,
         asset: &Asset,
         all_assets: &[Asset],
-        pb: ProgressBar,
     ) -> Result<Downloaded> {
         let mut guard = InstallGuard::new();
 
-        let asset_path = download::download_to_cache(
-            client,
-            &asset.browser_download_url,
-            &asset.name,
-            pb.clone(),
-        )
-        .await
-        .with_context(|| format!("failed to download {}", asset.name))?;
+        let asset_path =
+            download::download_to_cache(client, &asset.browser_download_url, &asset.name)
+                .await
+                .with_context(|| format!("failed to download {}", asset.name))?;
         guard.track_file(asset_path.clone());
 
         let installed_sha256 =
             if let Some(chk_asset) = checksum::find_checksum_asset(&asset.name, all_assets) {
-                pb.set_message("verifying...");
                 match checksum::verify_checksum(
                     client,
                     &asset_path,
@@ -102,17 +96,11 @@ impl Downloaded {
                 )
                 .await
                 {
-                    Ok(hash) => {
-                        pb.finish_with_message("verified");
-                        Some(hash)
-                    }
-                    Err(e) => {
-                        pb.finish_with_message("checksum failed");
-                        return Err(e);
-                    }
+                    Ok(hash) => Some(hash),
+                    Err(e) => return Err(e),
                 }
             } else {
-                pb.finish_with_message("done");
+                tracing::debug!("no checksum asset published; recording local sha256");
                 checksum::sha256_file(&asset_path).ok()
             };
 
@@ -196,14 +184,16 @@ impl<'a> InstallSpecBuilder<'a> {
 }
 
 impl InstallSpec<'_> {
-    /// Download + verify. Thin wrapper over [`Downloaded::fetch`] for sequential
-    /// callers; the concurrent updater calls `Downloaded::fetch` directly.
-    pub async fn download(&self, client: &reqwest::Client, pb: ProgressBar) -> Result<Downloaded> {
-        Downloaded::fetch(client, self.asset, &self.release.assets, pb).await
+    /// Download + verify. Thin wrapper over [`Downloaded::fetch`] for sequential callers; the
+    /// concurrent updater calls `Downloaded::fetch` directly. Run this inside a
+    /// [`download::download_span`] so the byte-progress bar renders (see [`InstallSpec::run`]).
+    pub async fn download(&self, client: &reqwest::Client) -> Result<Downloaded> {
+        Downloaded::fetch(client, self.asset, &self.release.assets).await
     }
 
     /// Extract (or treat as a raw binary), locate the binary, atomic-install it, and
     /// build the resulting `ToolEntry`. Sequential — may show the interactive binary picker.
+    #[tracing::instrument(skip_all, fields(repo = %self.repo, install_name = %self.install_name))]
     pub fn install(&self, mut dl: Downloaded) -> Result<InstallResult> {
         // Detect archive by filename extension first; fall back to content_type for assets
         // with no extension.
@@ -229,7 +219,10 @@ impl InstallSpec<'_> {
 
             // Locate binary inside the extracted tree
             match find_binary(&extract_dir, &self.find_name)? {
-                BinarySearchResult::Found(p) => p,
+                BinarySearchResult::Found(p) => {
+                    tracing::debug!(path = %p.display(), "located binary in archive");
+                    p
+                }
                 BinarySearchResult::Multiple(candidates) => {
                     let names: Vec<String> =
                         candidates.iter().map(|p| p.display().to_string()).collect();
@@ -276,9 +269,11 @@ impl InstallSpec<'_> {
     }
 
     /// Both phases back-to-back, for the simple single-tool callers (install / sync / single
-    /// update). The concurrent updater interleaves the phases by hand instead.
-    pub async fn run(&self, client: &reqwest::Client, pb: ProgressBar) -> Result<InstallResult> {
-        let dl = self.download(client, pb).await?;
+    /// update). The concurrent updater interleaves the phases by hand instead. Owns its own
+    /// download span so the byte-progress bar renders for the single-tool case.
+    pub async fn run(&self, client: &reqwest::Client) -> Result<InstallResult> {
+        let span = download::download_span(&self.install_name, self.asset.size);
+        let dl = self.download(client).instrument(span).await?;
         self.install(dl)
     }
 }

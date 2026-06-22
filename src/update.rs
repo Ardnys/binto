@@ -2,16 +2,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use indicatif::MultiProgress;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
 use crate::config::Config;
 use crate::github::api::{ApiResponse, ConditionalResult, GithubClient};
 use crate::github::types::{Asset, Release};
-use crate::installer::download::make_progress_bar;
+use crate::installer::download::download_span;
 use crate::installer::{Downloaded, InstallSpec};
 use crate::manifest::Manifest;
-use crate::output::{print_info, print_success, print_warning};
+use crate::output::{print_info, print_status, print_success, print_warning};
 use crate::picker::select_asset;
 use crate::state::{State, ToolEntry};
 
@@ -28,11 +28,10 @@ struct PendingUpdate {
 }
 
 fn print_up_to_date(name: &str, tag: &str) {
-    println!(
-        "  {} {} (up to date)",
+    print_status(&format!(
+        "  {} {tag} (up to date)",
         console::style(name).green().bold(),
-        tag
-    );
+    ));
 }
 
 /// Concurrent update for all tools: fan-out API checks → sequential asset selection
@@ -60,12 +59,11 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
 
     for (name, entry) in snapshot {
         if let Some(tag) = manifest.is_pinned(&entry.repo) {
-            println!(
-                "  {} {} (pinned {})",
+            print_status(&format!(
+                "  {} {} (pinned {tag})",
                 console::style(&name).blue().bold(),
                 entry.installed_tag,
-                tag
-            );
+            ));
             continue;
         }
         let client = client.clone();
@@ -103,12 +101,12 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
                     continue;
                 }
 
-                println!(
+                print_status(&format!(
                     "  {} {} → {}",
                     console::style(&name).yellow().bold(),
                     entry.installed_tag,
                     release.tag_name
-                );
+                ));
 
                 let asset = select_asset(
                     &release,
@@ -139,24 +137,27 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    // Phase C: concurrent downloads behind a MultiProgress
-    println!();
-    let mp = MultiProgress::new();
+    // Phase C: concurrent downloads. Each task runs inside its own `download` span, which
+    // renders the byte-progress bar (via tracing-indicatif) and tags the task's log events.
     let http = client.http_client().clone();
     let mut pending_map: HashMap<String, PendingUpdate> = HashMap::new();
     let mut dl_set: JoinSet<(String, Result<Downloaded>)> = JoinSet::new();
-    let longest_name = pending.iter().map(|p| p.name.len()).max().unwrap_or(0);
 
     for p in pending {
         let task_name = p.name.clone();
-        let pb = make_progress_bar(Some(&mp), p.asset.size, &p.name, Some(longest_name));
         let http = http.clone();
         let asset = p.asset.clone();
         let all_assets = p.release.assets.clone();
-        dl_set.spawn(async move {
-            let result = Downloaded::fetch(&http, &asset, &all_assets, pb).await;
-            (task_name, result)
-        });
+        let span = download_span(&task_name, asset.size);
+        dl_set.spawn(
+            async move {
+                (
+                    task_name,
+                    Downloaded::fetch(&http, &asset, &all_assets).await,
+                )
+            }
+            .instrument(span),
+        );
         pending_map.insert(p.name.clone(), p);
     }
 
@@ -178,7 +179,6 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     }
 
     // Phase D: sequential extract + install (handles interactive binary picker safely)
-    println!();
     for (name, dl) in downloads {
         let Some(p) = pending_map.remove(&name) else {
             continue;
@@ -287,10 +287,10 @@ pub async fn cmd_update(
                 return Ok(());
             }
 
-            println!(
+            print_status(&format!(
                 "  Update available: {} → {}",
                 entry.installed_tag, release.tag_name
-            );
+            ));
 
             let user_arch = crate::matcher::score::detect_arch();
             let asset = select_asset(
@@ -301,7 +301,6 @@ pub async fn cmd_update(
                 "Pick an asset",
             )?;
             let install_dir = entry.install_dir(&config.install_dir).to_path_buf();
-            let pb = make_progress_bar(None, asset.size, &entry.binary_name, None);
 
             // Locate the binary in the archive by its upstream name; reinstall under the
             // tracked name (which may be an `--alias`).
@@ -309,7 +308,7 @@ pub async fn cmd_update(
                 .install_dir(&install_dir)
                 .install_name(&entry.binary_name)
                 .build()
-                .run(client.http_client(), pb)
+                .run(client.http_client())
                 .await?;
 
             state.upsert(result.tool_entry.with_etag(new_etag));
@@ -425,23 +424,22 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
     } else {
         for r in &results {
             if r.update_available {
-                println!(
+                print_status(&format!(
                     "  {} {} → {} (update available)",
                     console::style(&r.name).yellow().bold(),
                     r.installed_tag,
                     r.latest_tag.as_deref().unwrap_or("?")
-                );
+                ));
             } else {
                 print_up_to_date(&r.name, &r.installed_tag);
             }
         }
 
         if any_updates {
-            println!();
-            println!(
-                "{}",
+            print_status(&format!(
+                "\n{}",
                 console::style("Updates available — run `ghr update --all`").yellow()
-            );
+            ));
         }
     }
 

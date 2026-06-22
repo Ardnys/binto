@@ -55,8 +55,10 @@ impl GithubClient {
         std::env::var("GITHUB_TOKEN").ok().or(config_token)
     }
 
+    #[tracing::instrument(skip(self), fields(repo = %repo), err(level = "debug"))]
     pub async fn list_releases(&self, repo: &str) -> Result<Vec<Release>> {
         let url = format!("https://api.github.com/repos/{repo}/releases");
+        tracing::debug!("listing releases");
         let resp = self
             .client
             .get(&url)
@@ -92,8 +94,10 @@ impl GithubClient {
 
     /// Fetch a single release by its exact tag (`GET /repos/{repo}/releases/tags/{tag}`).
     /// Used for version pinning. A 404 means there is no release with that tag.
+    #[tracing::instrument(skip(self), fields(repo = %repo, tag = %tag), err(level = "debug"))]
     pub async fn get_release_by_tag(&self, repo: &str, tag: &str) -> Result<Release> {
         let url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
+        tracing::debug!("fetching release by tag");
         let resp = self
             .client
             .get(&url)
@@ -131,12 +135,14 @@ impl GithubClient {
             .with_context(|| format!("failed to deserialize release {tag} for {repo}"))
     }
 
+    #[tracing::instrument(skip(self, etag), fields(repo = %repo, conditional = etag.is_some()), err(level = "debug"))]
     pub async fn get_latest_release(
         &self,
         repo: &str,
         etag: Option<&str>,
     ) -> Result<ConditionalResult<Release>> {
         let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+        tracing::debug!("fetching latest release for {repo}");
         let mut req = self.client.get(&url);
 
         if let Some(tag) = etag {
@@ -151,6 +157,7 @@ impl GithubClient {
         self.check_rate_limit(&resp);
 
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            tracing::debug!("304 Not Modified");
             return Ok(ConditionalResult::NotModified);
         }
 

@@ -2,17 +2,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use indicatif::MultiProgress;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
 use crate::config::Config;
 use crate::github::GithubClient;
 use crate::github::types::{Asset, Release};
-use crate::installer::download::make_progress_bar;
+use crate::installer::download::download_span;
 use crate::installer::{Downloaded, InstallSpec, default_binary_name};
 use crate::manifest::{Manifest, ManifestEntry};
 use crate::matcher::score::detect_arch;
-use crate::output::{print_info, print_success, print_warning};
+use crate::output::{print_info, print_status, print_success, print_warning};
 use crate::picker;
 use crate::state::State;
 
@@ -142,31 +142,29 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
     }
 
     if !pending.is_empty() {
-        // Phase C: concurrent downloads behind a single MultiProgress.
-        println!();
-        let mp = MultiProgress::new();
+        // Phase C: concurrent downloads. Each task runs inside its own `download` span, which
+        // renders the byte-progress bar (via tracing-indicatif) and tags the task's log events.
         let http = client.http_client().clone();
         let mut pending_map: HashMap<String, PendingSync> = HashMap::new();
         let mut dl_set: JoinSet<(String, Result<Downloaded>)> = JoinSet::new();
-        let longest_name = pending
-            .iter()
-            .map(|p| p.install_name.len())
-            .max()
-            .unwrap_or(0);
 
         for p in pending {
             let task_name = p.install_name.clone();
-            let pb =
-                make_progress_bar(Some(&mp), p.asset.size, &p.install_name, Some(longest_name));
             let http = http.clone();
             let asset = p.asset.clone();
             // Each task verifies against its own release's assets (the checksum lives there),
             // not the union of every tool's picked asset.
             let all_assets = p.release.assets.clone();
-            dl_set.spawn(async move {
-                let result = Downloaded::fetch(&http, &asset, &all_assets, pb).await;
-                (task_name, result)
-            });
+            let span = download_span(&task_name, asset.size);
+            dl_set.spawn(
+                async move {
+                    (
+                        task_name,
+                        Downloaded::fetch(&http, &asset, &all_assets).await,
+                    )
+                }
+                .instrument(span),
+            );
             pending_map.insert(p.install_name.clone(), p);
         }
 
@@ -184,9 +182,6 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
         }
 
         // Phase D: sequential extract + install (handles the interactive binary picker safely).
-        if !downloads.is_empty() {
-            println!();
-        }
         for (name, dl) in downloads {
             let Some(p) = pending_map.remove(&name) else {
                 continue;
@@ -220,7 +215,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
         state.save()?;
     }
 
-    println!();
+    print_status("");
     print_info(&format!(
         "Sync complete: {installed} installed, {skipped} already present, {failed} failed."
     ));
@@ -248,10 +243,10 @@ fn prune_extras(state: &mut State, manifest: &Manifest, yes: bool) -> Result<()>
         return Ok(());
     }
 
-    println!();
+    print_status("");
     print_warning("These managed tools are not in the manifest and will be removed:");
     for (name, path) in &extras {
-        println!("  {name} ({})", path.display());
+        print_status(&format!("  {name} ({})", path.display()));
     }
 
     let confirmed = yes

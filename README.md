@@ -47,9 +47,9 @@ ghr install BurntSushi/ripgrep -a rg  # install under a custom binary name
 
 Pass `--to <path>` to install into a directory other than the configured `install_dir` (a leading `~` is expanded). The choice is recorded in the tool's install path, so later `ghr update`s reinstall it there too. It's a local override and is not written to the manifest.
 
-Pass `-a/--alias <name>` to install the binary under a custom name instead of the repo-derived default — `ghr install BurntSushi/ripgrep -a rg` installs `rg`. The alias becomes the installed filename and the name ghr tracks it by (`ghr update rg`, `ghr remove rg`), and is recorded in the manifest so `ghr sync` reproduces it on another machine. The binary *inside* the archive is still auto-detected as usual; the alias only renames the installed file.
+Pass `-a/--alias <name>` to install the binary under a custom name instead of the repo-derived default. For example, `ghr install BurntSushi/ripgrep -a rg` installs `rg`. The alias becomes the installed filename and the name ghr tracks it by (`ghr update rg`, `ghr remove rg`), and is recorded in the manifest so `ghr sync` reproduces it on another machine. The binary *inside* the archive is still auto-detected as usual; the alias only renames the installed file.
 
-Pass `-t/--tag <tag>` to install (and pin) an exact release instead of picking interactively. A pinned tool is **locked**: `ghr update` skips it until you explicitly unpin it with `ghr update <name> --force` (see below). To move a pin to a different tag, re-run `ghr install <repo> -t <newtag>` on the already-managed tool — it reinstalls at that tag and updates the pin in place. Every install records the tool in the [manifest](#manifest).
+Pass `-t/--tag <tag>` to install (and pin) an exact release instead of picking interactively. A pinned tool is **locked**: `ghr update` skips it until you explicitly unpin it with `ghr update <name> --force` (see below). To move a pin to a different tag, re-run `ghr install <repo> -t <newtag>` on the already-managed tool, which reinstalls at that tag and updates the pin in place. Every install records the tool in the [manifest](#manifest).
 
 ### `ghr update [name] [--all] [-f/--force]`
 
@@ -113,7 +113,7 @@ ghr sync --prune -y     # ...without the confirmation prompt
 
 ### `ghr clean`
 
-Remove ghr's download cache at `~/.cache/ghr`. Installs already clean up after themselves, but interrupted or failed runs can leave partial downloads and extraction directories behind — this is the manual sweep. The cache is fully regenerable, so it runs without a prompt and reports how much was freed.
+Remove ghr's download cache at `~/.cache/ghr`. Installs already clean up after themselves, but interrupted or failed runs can leave partial downloads and extraction directories behind. 
 
 ```sh
 ghr clean
@@ -147,9 +147,25 @@ github_token = ""           # or set GITHUB_TOKEN env var
 include_prereleases = false
 check_interval_hours = 24
 notify = "terminal"         # "terminal" | "desktop" | "none"
+# notifications have not been implemented yet though
 ```
 
 **`GITHUB_TOKEN`** — unauthenticated requests are limited to 60/hour. A token raises this to 5000/hour. Create one at <https://github.com/settings/tokens> (no scopes needed for public repos).
+
+---
+
+## Logging
+
+Every run writes a detailed, rotating log to `~/.local/share/ghr/logs/` (daily files, the last 7 kept). The install pipeline is instrumented with spans, so a failed install is traceable to the exact phase. 
+
+Terminal verbosity is controlled per-invocation; the file log stays at `debug` regardless so there's always a post-mortem trail:
+
+```sh
+ghr -v update --all     # show debug detail on the terminal (-vv for trace)
+ghr -q sync             # only warnings and errors on the terminal
+```
+
+`GHR_LOG` overrides the **file** log filter using [`tracing` directives](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) (e.g. `GHR_LOG=ghr=trace`); `GHR_LOG=off` disables the file log entirely. Human-facing messages go to stderr, leaving stdout clean for piping `--json` output.
 
 ---
 
@@ -173,27 +189,28 @@ If the top candidate's score is sufficiently ahead of the second, it is selected
 | `~/.config/ghr/config.toml` | User configuration |
 | `~/.config/ghr/manifest.toml` | Declarative, portable list of managed tools (repo + optional pinned tag) |
 | `~/.local/share/ghr/state.toml` | Installed tools, versions, checksums, ETags |
+| `~/.local/share/ghr/logs/` | Rotating debug logs (one per day, last 7 kept) |
 | `~/.cache/ghr/` | Download cache (cleaned after each install; `ghr clean` clears any leftovers) |
 
 ---
 
 ## Manifest
 
-`~/.config/ghr/manifest.toml` is a declarative, portable list of the tools ghr manages. Unlike `state.toml` — a local runtime cache of install paths, checksums, and ETags — the manifest holds only each tool's portable identity (its repo and an optional pinned tag), so you can commit it to your dotfiles and replay it on another machine.
+`~/.config/ghr/manifest.toml` is a declarative, portable list of the tools ghr manages. It contains only essential informations about tools and preferences, so you can commit it to your dotfiles and replay it on another machine to get the same setup.
 
 `ghr install`, `ghr remove`, and `ghr adopt` keep it in sync automatically. You can also hand-edit it, and your edits survive: ghr rewrites only the one entry it's changing, so **comments, ordering, blank lines, and commented-out entries are preserved** across automatic updates.
 
 ```toml
-# My dotfiles tools — keep this list tidy
+# You can add this to your dotfiles
 [[tools]]
 repo = "BurntSushi/ripgrep"
-alias = "rg"         # optional — install/track the binary under this name
+alias = "rg"         # optionally install/track the binary under this name
 
 [[tools]]
 repo = "sharkdp/bat"
-tag = "v0.24.0"      # optional — presence pins/locks the tool to this tag
+tag = "v0.24.0"      # optionally pin a tool to a specific release tag
 
-# disabled for now — comment a block out to keep it around without syncing it
+# comment a block out to keep it around without syncing it
 # [[tools]]
 # repo = "junegunn/fzf"
 ```
@@ -208,7 +225,7 @@ Run `ghr sync` to install everything in the manifest that isn't installed yet. A
 - [x] `ghr i` alias for `ghr install`
 - [x] `ghr install --to` command to install to given path
 - [x] `ghr clean` to clean cache files
-- [ ] logging / tracing. indicatif has both logging and tracing integrations. logs should be available in a log file. replace `println`s with proper log statements.
+- [x] logging / tracing. indicatif has both logging and tracing integrations. logs should be available in a log file. replace `println`s with proper log statements.
 - [x] Version pinning with `ghr install Ardnys/ghr -t v0.1.1`
 - [x] **manifest file support**
   - [x] `manifest.toml` alongside config.toml, shows tools and repositories, optional version tags.

@@ -72,6 +72,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 }
 
 /// Download checksum file, parse it, and verify the downloaded asset.
+#[tracing::instrument(skip_all, fields(asset = %asset_name), err(level = "debug"))]
 pub async fn verify_checksum(
     client: &reqwest::Client,
     asset_path: &Path,
@@ -93,6 +94,7 @@ pub async fn verify_checksum(
         .with_context(|| format!("could not find checksum for '{asset_name}' in checksums file"))?;
 
     let got = sha256_file(asset_path)?;
+    tracing::debug!(%expected, %got, "comparing checksums");
 
     if got != expected {
         return Err(GhrError::ChecksumMismatch {
