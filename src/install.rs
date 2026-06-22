@@ -16,7 +16,7 @@ use crate::state::State;
 pub enum ReleaseSelection {
     /// Install this exact tag (version pinning). Resolved via `get_release_by_tag`.
     Tag(String),
-    /// Show the interactive release picker (the default `ghr install` flow).
+    /// Show the interactive release picker (the default `binto install` flow).
     InteractivePick,
 }
 
@@ -93,7 +93,7 @@ impl InstallRequest<'_> {
     }
 }
 
-/// `ghr install <owner/repo> [-t <tag>]`. Pins to `tag` when given (and records the pin in
+/// `binto install <owner/repo> [-t <tag>]`. Pins to `tag` when given (and records the pin in
 /// the manifest), otherwise shows the interactive release picker.
 pub async fn cmd_install(
     repo: &str,
@@ -105,7 +105,7 @@ pub async fn cmd_install(
 ) -> Result<()> {
     // Resolve the effective install directory: a `--to` override (with `~` expanded) wins,
     // otherwise the configured install_dir. The chosen dir is stored in the tool's
-    // install_path, so future `ghr update`s reinstall here too — same as adopted tools.
+    // install_path, so future `binto update`s reinstall here too — same as adopted tools.
     let install_dir = match &to {
         Some(p) => config::expand_tilde(p),
         None => config.install_dir.clone(),
@@ -123,13 +123,13 @@ pub async fn cmd_install(
 
     if already_managed {
         // Re-installing a managed tool only makes sense to move its pin, so require an
-        // explicit tag. A bare `ghr install <repo>` must not silently reinstall — that's
-        // what `ghr update` is for.
+        // explicit tag. A bare `binto install <repo>` must not silently reinstall — that's
+        // what `binto update` is for.
         let Some(new_tag) = tag.as_deref() else {
             let existing = state.get(install_name).unwrap();
             anyhow::bail!(
-                "'{install_name}' is already managed by ghr ({}). \
-                     Run `ghr update {install_name}` to upgrade it, \
+                "'{install_name}' is already managed by binto ({}). \
+                     Run `binto update {install_name}` to upgrade it, \
                      or pass `-t <tag>` to re-pin it to a specific release.",
                 existing.installed_tag
             );
@@ -140,13 +140,13 @@ pub async fn cmd_install(
         // re-pointing with -t would place the new binary in install_dir and leave the original behind.
         print_info(&format!("Re-pointing {install_name} to {new_tag}."));
     } else if let Some(existing_path) = crate::find_on_path(install_name) {
-        // Not managed by ghr, but a binary with this name already exists on $PATH.
+        // Not managed by binto, but a binary with this name already exists on $PATH.
         print_warning(&format!(
             "'{install_name}' is already installed at {}",
             existing_path.display()
         ));
         let proceed = dialoguer::Confirm::new()
-            .with_prompt("Install anyway and let ghr manage it going forward?")
+            .with_prompt("Install anyway and let binto manage it going forward?")
             .default(false)
             .interact()?;
         if !proceed {
@@ -182,7 +182,7 @@ pub async fn cmd_install(
     ));
 
     // Keep the declarative manifest in sync. The tag (Some => pinned, None => clears any
-    // existing pin) and the alias are recorded against the repo so `ghr sync` can replay
+    // existing pin) and the alias are recorded against the repo so `binto sync` can replay
     // both elsewhere. Format-preserving write: comments/ordering elsewhere are kept.
     Manifest::record_and_save(repo, tag.as_deref(), alias.as_deref())?;
 

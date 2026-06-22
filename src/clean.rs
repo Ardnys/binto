@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use crate::installer::download::cache_dir;
 use crate::output::{print_info, print_success};
 
-/// `ghr clean`: delete the download cache at `~/.cache/ghr`. Installs already clean their own
+/// `binto clean`: delete the download cache at `~/.cache/binto`. Installs already clean their own
 /// temp files, but interrupted/failed runs can leave partial downloads and `*-extract` dirs
 /// behind — this is the manual sweep. The cache is fully regenerable, so there's no prompt.
 pub fn cmd_clean() -> Result<()> {

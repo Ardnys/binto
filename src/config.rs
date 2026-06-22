@@ -54,11 +54,11 @@ pub fn expand_tilde(path: &Path) -> PathBuf {
     }
 }
 
-/// The ghr config directory (`~/.config/ghr`). Shared by `config.toml` and `manifest.toml`.
+/// The binto config directory (`~/.config/binto`). Shared by `config.toml` and `manifest.toml`.
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
-        .join("ghr")
+        .join("binto")
 }
 
 impl Config {

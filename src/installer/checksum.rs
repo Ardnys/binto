@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::error::GhrError;
+use crate::error::BintoError;
 use crate::github::types::Asset;
 
 /// Find the checksum sidecar asset for `target_name` in the full asset list.
@@ -97,7 +97,7 @@ pub async fn verify_checksum(
     tracing::debug!(%expected, %got, "comparing checksums");
 
     if got != expected {
-        return Err(GhrError::ChecksumMismatch {
+        return Err(BintoError::ChecksumMismatch {
             filename: asset_name.to_string(),
             expected,
             got,

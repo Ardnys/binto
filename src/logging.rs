@@ -1,9 +1,9 @@
-//! Tracing setup: a styled terminal layer (preserves ghr's UX, → stderr) plus an always-on
+//! Tracing setup: a styled terminal layer (preserves binto's UX, → stderr) plus an always-on
 //! rotating file log under the data dir, with download progress driven by `tracing-indicatif`
 //! spans so log lines never clobber the bars.
 //!
-//! Verbosity: `-v`/`-vv`/`-q` control the *terminal* level; `GHR_LOG` controls the *file* level
-//! (`GHR_LOG=off` disables the file). The file defaults to `debug` so a failed install is always
+//! Verbosity: `-v`/`-vv`/`-q` control the *terminal* level; `BINTO_LOG` controls the *file* level
+//! (`BINTO_LOG=off` disables the file). The file defaults to `debug` so a failed install is always
 //! diagnosable after the fact.
 
 use std::io::{self, Write};
@@ -51,15 +51,15 @@ impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for StripAnsiMakeWriter<M> {
     }
 }
 
-/// The ghr log directory (`~/.local/share/ghr/logs`). Lives in the data dir (not the cache) so
-/// `ghr clean` doesn't wipe it.
+/// The binto log directory (`~/.local/share/binto/logs`). Lives in the data dir (not the cache) so
+/// `binto clean` doesn't wipe it.
 pub fn log_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
-        .join("ghr/logs")
+        .join("binto/logs")
 }
 
-/// Map the `-v`/`-q` flags to an `EnvFilter` for the terminal layer (scoped to the `ghr` crate
+/// Map the `-v`/`-q` flags to an `EnvFilter` for the terminal layer (scoped to the `binto` crate
 /// so dependency spans don't leak in).
 fn terminal_filter(verbose: u8, quiet: bool) -> EnvFilter {
     let level = if quiet && verbose == 0 {
@@ -71,24 +71,24 @@ fn terminal_filter(verbose: u8, quiet: bool) -> EnvFilter {
             _ => "trace",
         }
     };
-    EnvFilter::new(format!("ghr={level}"))
+    EnvFilter::new(format!("binto={level}"))
 }
 
-/// The file layer's filter: `GHR_LOG` if set, else `debug` (→ `trace` at `-vv`). Returns `None`
-/// when `GHR_LOG=off`, which disables the file log entirely.
+/// The file layer's filter: `BINTO_LOG` if set, else `debug` (→ `trace` at `-vv`). Returns `None`
+/// when `BINTO_LOG=off`, which disables the file log entirely.
 fn file_filter(verbose: u8) -> Option<EnvFilter> {
-    match std::env::var("GHR_LOG") {
+    match std::env::var("BINTO_LOG") {
         Ok(v) if v.eq_ignore_ascii_case("off") => None,
         Ok(v) if !v.trim().is_empty() => Some(EnvFilter::new(v)),
         _ => {
             let level = if verbose >= 2 { "trace" } else { "debug" };
-            Some(EnvFilter::new(format!("ghr={level}")))
+            Some(EnvFilter::new(format!("binto={level}")))
         }
     }
 }
 
 /// Build the rotating file layer (daily, keep 7) plus its non-blocking worker guard. Returns
-/// `None` if `GHR_LOG=off` or the appender can't be created — logging must never take down a
+/// `None` if `BINTO_LOG=off` or the appender can't be created — logging must never take down a
 /// real command, so a file failure degrades to terminal-only.
 fn file_layer<S>(verbose: u8) -> Option<(Box<dyn Layer<S> + Send + Sync>, WorkerGuard)>
 where
@@ -104,7 +104,7 @@ where
 
     let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("ghr")
+        .filename_prefix("binto")
         .filename_suffix("log")
         .max_log_files(7)
         .build(&dir)

@@ -166,7 +166,7 @@ fn maybe_print_stale_banner(config: &Config) {
         print_status(&format!(
             "{}",
             style(format!(
-                "{stale_count} tool(s) haven't been checked recently — run `ghr check`"
+                "{stale_count} tool(s) haven't been checked recently — run `binto check`"
             ))
             .yellow()
         ));
@@ -178,7 +178,7 @@ fn cmd_list(json: bool, _config: &Config) -> Result<()> {
     let manifest = Manifest::load()?;
 
     if state.is_empty() {
-        print_info("No tools managed by ghr. Run `ghr install <owner/repo>` to get started.");
+        print_info("No tools managed by binto. Run `binto install <owner/repo>` to get started.");
         return Ok(());
     }
 
@@ -226,7 +226,7 @@ fn cmd_list(json: bool, _config: &Config) -> Result<()> {
 /// Delete a managed tool's binary from disk and drop it from `state`. Does NOT save state or
 /// touch the manifest — callers batch those (and `sync --prune` deliberately leaves the
 /// manifest alone). Returns the removed entry so callers can sync the manifest by repo.
-/// Shared by `ghr remove` and `ghr sync --prune`.
+/// Shared by `binto remove` and `binto sync --prune`.
 pub fn remove_tool(state: &mut State, name: &str) -> Result<ToolEntry> {
     let entry = state.require(name)?.clone();
 
@@ -245,7 +245,7 @@ pub fn remove_tool(state: &mut State, name: &str) -> Result<ToolEntry> {
 }
 
 fn cmd_remove(name: &str, yes: bool, _config: &Config) -> Result<()> {
-    // TODO: add a funny condition for where ghr tries to remove itself
+    // TODO: add a funny condition for where binto tries to remove itself
     let mut state = State::load()?;
 
     let entry = state.require(name)?.clone();
@@ -270,7 +270,7 @@ fn cmd_remove(name: &str, yes: bool, _config: &Config) -> Result<()> {
     state.save()?;
 
     // Keep the declarative manifest in sync: drop the row for this tool's repo so a later
-    // `ghr sync` won't reinstall it. State is keyed by binary name, the manifest by repo.
+    // `binto sync` won't reinstall it. State is keyed by binary name, the manifest by repo.
     // Format-preserving write: comments and unrelated entries are left untouched.
     manifest::Manifest::remove_and_save(&entry.repo)?;
 

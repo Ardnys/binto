@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::error::GhrError;
+use crate::error::BintoError;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct State {
@@ -54,7 +54,7 @@ impl State {
     pub fn state_path() -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
-            .join("ghr/state.toml")
+            .join("binto/state.toml")
     }
 
     pub fn load() -> Result<Self> {
@@ -67,7 +67,7 @@ impl State {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
 
-        toml::from_str(&raw).map_err(|e| GhrError::StateCorrupted(e.to_string()).into())
+        toml::from_str(&raw).map_err(|e| BintoError::StateCorrupted(e.to_string()).into())
     }
 
     pub fn save(&self) -> Result<()> {
@@ -108,7 +108,7 @@ impl State {
     /// Look up a tool, returning a typed `UnknownTool` error if it isn't managed.
     pub fn require(&self, name: &str) -> Result<&ToolEntry> {
         self.tools.get(name).ok_or_else(|| {
-            GhrError::UnknownTool {
+            BintoError::UnknownTool {
                 name: name.to_string(),
             }
             .into()
@@ -195,8 +195,8 @@ mod tests {
         let state = State::default();
         let err = state.require("nope").unwrap_err();
         assert!(matches!(
-            err.downcast_ref::<GhrError>(),
-            Some(GhrError::UnknownTool { .. })
+            err.downcast_ref::<BintoError>(),
+            Some(BintoError::UnknownTool { .. })
         ));
     }
 

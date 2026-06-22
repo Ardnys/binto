@@ -38,7 +38,7 @@ impl GithubClient {
         }
 
         let client = reqwest::Client::builder()
-            .user_agent(concat!("ghr/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("binto/", env!("CARGO_PKG_VERSION")))
             .default_headers(headers)
             .build()
             .context("failed to build HTTP client")?;
@@ -75,13 +75,13 @@ impl GithubClient {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         {
-            bail!(crate::error::GhrError::RateLimitExceeded { reset_time: reset });
+            bail!(crate::error::BintoError::RateLimitExceeded { reset_time: reset });
         }
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            bail!(crate::error::GhrError::ApiError {
+            bail!(crate::error::BintoError::ApiError {
                 status,
                 message: body
             });
@@ -114,7 +114,7 @@ impl GithubClient {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         {
-            bail!(crate::error::GhrError::RateLimitExceeded { reset_time: reset });
+            bail!(crate::error::BintoError::RateLimitExceeded { reset_time: reset });
         }
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -124,7 +124,7 @@ impl GithubClient {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            bail!(crate::error::GhrError::ApiError {
+            bail!(crate::error::BintoError::ApiError {
                 status,
                 message: body
             });
@@ -168,13 +168,13 @@ impl GithubClient {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         {
-            bail!(crate::error::GhrError::RateLimitExceeded { reset_time: reset });
+            bail!(crate::error::BintoError::RateLimitExceeded { reset_time: reset });
         }
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            bail!(crate::error::GhrError::ApiError {
+            bail!(crate::error::BintoError::ApiError {
                 status,
                 message: body
             });

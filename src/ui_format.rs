@@ -1,6 +1,6 @@
 //! Custom terminal event formatter for the user-facing tracing layer.
 //!
-//! Reproduces ghr's original styled output (`✓` / `info:` / `warning:` / `error:`) from the
+//! Reproduces binto's original styled output (`✓` / `info:` / `warning:` / `error:`) from the
 //! event's level plus an optional `kind` field, so routing the `output::print_*` helpers
 //! through `tracing` keeps the exact terminal UX. Only the terminal layer uses this; the file
 //! layer uses the default timestamped formatter.

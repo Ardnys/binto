@@ -51,11 +51,11 @@ jobs:
         run: |
           TAG=${GITHUB_REF_NAME}
           TARGET=${{ matrix.target }}
-          ARCHIVE="ghr-${TAG}-${TARGET}.tar.gz"
-          BINARY="target/${TARGET}/release/ghr"
+          ARCHIVE="binto-${TAG}-${TARGET}.tar.gz"
+          BINARY="target/${TARGET}/release/binto"
 
           chmod +x "${BINARY}"
-          tar -czf "${ARCHIVE}" -C "target/${TARGET}/release" ghr
+          tar -czf "${ARCHIVE}" -C "target/${TARGET}/release" binto
           sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
 
           echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"

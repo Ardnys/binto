@@ -9,7 +9,7 @@ use tracing_indicatif::span_ext::IndicatifSpanExt;
 pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".cache"))
-        .join("ghr")
+        .join("binto")
 }
 
 /// The byte-progress bar template, rendered on a download span's progress bar.

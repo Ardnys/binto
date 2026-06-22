@@ -1,15 +1,15 @@
 [package]
-name = "ghr"
+name = "binto"
 version = "0.1.2"
 edition = "2024"
 description = "User-land binary package manager for GitHub releases"
 license = "MIT"
-repository = "https://github.com/Ardnys/ghr"
+repository = "https://github.com/Ardnys/binto"
 keywords = ["github", "releases", "package-manager", "cli"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "ghr"
+name = "binto"
 path = "src/main.rs"
 
 [dependencies]

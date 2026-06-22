@@ -35,7 +35,7 @@ pub async fn cmd_adopt(path: String, repo: String, _config: &Config) -> Result<(
 
     if state.contains(&binary_name) {
         print_warning(&format!(
-            "{binary_name} is already managed by ghr. Use `ghr update {binary_name}` instead."
+            "{binary_name} is already managed by binto. Use `binto update {binary_name}` instead."
         ));
         return Ok(());
     }
@@ -57,12 +57,12 @@ pub async fn cmd_adopt(path: String, repo: String, _config: &Config) -> Result<(
     state.upsert(entry);
     state.save()?;
 
-    // Record the adopted tool in the portable manifest (unpinned) so `ghr sync` on another
+    // Record the adopted tool in the portable manifest (unpinned) so `binto sync` on another
     // machine reinstalls it from its GitHub releases.
     Manifest::set_tag_and_save(&repo, None)?;
 
     print_success(&format!(
-        "Adopted {binary_name} ({repo}). Run `ghr update {binary_name}` to detect the current version."
+        "Adopted {binary_name} ({repo}). Run `binto update {binary_name}` to detect the current version."
     ));
 
     Ok(())

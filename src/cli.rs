@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "ghr",
+    name = "binto",
     about = "GitHub Release manager — user-land binary package manager"
 )]
 #[command(version)]
@@ -68,7 +68,7 @@ pub enum Commands {
         json: bool,
     },
 
-    /// Register an already-installed binary under ghr management
+    /// Register an already-installed binary under binto management
     Adopt {
         /// Path to the existing binary
         path: String,
@@ -76,7 +76,7 @@ pub enum Commands {
         repo: String,
     },
 
-    /// Uninstall a binary and remove it from ghr state
+    /// Uninstall a binary and remove it from binto state
     Remove {
         /// Name of the tool to remove
         name: String,
@@ -95,12 +95,12 @@ pub enum Commands {
         yes: bool,
     },
 
-    /// Remove ghr's download cache (`~/.cache/ghr`)
+    /// Remove binto's download cache (`~/.cache/binto`)
     Clean,
 
     /// Generate and optionally enable a systemd user timer for automatic update checks
     SetupTimer,
 
-    /// Stop, disable, and remove the ghr systemd timer
+    /// Stop, disable, and remove the binto systemd timer
     DisableTimer,
 }

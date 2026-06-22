@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use tracing::Instrument;
 
-use crate::error::GhrError;
+use crate::error::BintoError;
 use crate::github::types::{Asset, Release};
 use crate::matcher::pattern::asset_to_pattern;
 use crate::output::print_info;
@@ -235,7 +235,7 @@ impl InstallSpec<'_> {
                     candidates.into_iter().nth(selection).unwrap()
                 }
                 BinarySearchResult::NotFound => {
-                    return Err(GhrError::BinaryNotFoundInArchive.into());
+                    return Err(BintoError::BinaryNotFoundInArchive.into());
                 }
             }
         } else {

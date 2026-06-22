@@ -5,7 +5,7 @@ use crate::output::{print_info, print_success, print_warning};
 fn service_content(exe_path: &str) -> String {
     format!(
         "[Unit]\n\
-         Description=ghr update check\n\
+         Description=binto update check\n\
          \n\
          [Service]\n\
          Type=oneshot\n\
@@ -14,7 +14,7 @@ fn service_content(exe_path: &str) -> String {
 }
 
 const TIMER: &str = "[Unit]
-Description=Run ghr update check periodically
+Description=Run binto update check periodically
 
 [Timer]
 OnCalendar=daily
@@ -40,8 +40,8 @@ pub fn cmd_setup_timer() -> Result<()> {
     std::fs::create_dir_all(&systemd_dir)
         .with_context(|| format!("failed to create {}", systemd_dir.display()))?;
 
-    let service_path = systemd_dir.join("ghr.service");
-    let timer_path = systemd_dir.join("ghr.timer");
+    let service_path = systemd_dir.join("binto.service");
+    let timer_path = systemd_dir.join("binto.timer");
 
     std::fs::write(&service_path, service_content(exe_path))
         .with_context(|| format!("failed to write {}", service_path.display()))?;
@@ -56,24 +56,26 @@ pub fn cmd_setup_timer() -> Result<()> {
     print_success(&format!("Written {}", timer_path.display()));
 
     let enable = dialoguer::Confirm::new()
-        .with_prompt("Enable and start ghr.timer now? (systemctl --user enable --now ghr.timer)")
+        .with_prompt(
+            "Enable and start binto.timer now? (systemctl --user enable --now binto.timer)",
+        )
         .default(true)
         .interact()
         .context("failed to read user input")?;
 
     if enable {
         let status = std::process::Command::new("systemctl")
-            .args(["--user", "enable", "--now", "ghr.timer"])
+            .args(["--user", "enable", "--now", "binto.timer"])
             .status()
             .context("failed to run systemctl")?;
 
         if status.success() {
-            print_success("ghr.timer enabled and started.");
+            print_success("binto.timer enabled and started.");
         } else {
             anyhow::bail!("systemctl exited with status {status}");
         }
     } else {
-        print_info("To enable later: systemctl --user enable --now ghr.timer");
+        print_info("To enable later: systemctl --user enable --now binto.timer");
     }
 
     Ok(())
@@ -81,16 +83,18 @@ pub fn cmd_setup_timer() -> Result<()> {
 
 pub fn cmd_disable_timer() -> Result<()> {
     let systemd_dir = systemd_user_dir();
-    let service_path = systemd_dir.join("ghr.service");
-    let timer_path = systemd_dir.join("ghr.timer");
+    let service_path = systemd_dir.join("binto.service");
+    let timer_path = systemd_dir.join("binto.timer");
 
     if !timer_path.exists() && !service_path.exists() {
-        print_info("No ghr timer files found — nothing to disable.");
+        print_info("No binto timer files found — nothing to disable.");
         return Ok(());
     }
 
     let disable = dialoguer::Confirm::new()
-        .with_prompt("Disable and remove ghr.timer now? (systemctl --user disable --now ghr.timer)")
+        .with_prompt(
+            "Disable and remove binto.timer now? (systemctl --user disable --now binto.timer)",
+        )
         .default(false)
         .interact()
         .context("failed to read user input")?;
@@ -98,7 +102,7 @@ pub fn cmd_disable_timer() -> Result<()> {
     if disable {
         // Stop and disable the timer unit first (best-effort; ignore if systemd unavailable)
         let _ = std::process::Command::new("systemctl")
-            .args(["--user", "disable", "--now", "ghr.timer"])
+            .args(["--user", "disable", "--now", "binto.timer"])
             .status();
 
         for path in [&timer_path, &service_path] {

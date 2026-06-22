@@ -40,7 +40,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     let mut state = State::load()?;
 
     if state.is_empty() {
-        print_info("No tools managed by ghr. Run `ghr install <owner/repo>` to get started.");
+        print_info("No tools managed by binto. Run `binto install <owner/repo>` to get started.");
         return Ok(());
     }
 
@@ -227,7 +227,7 @@ pub async fn cmd_update(
     let mut state = State::load()?;
 
     if state.is_empty() {
-        print_info("No tools managed by ghr. Run `ghr install <owner/repo>` to get started.");
+        print_info("No tools managed by binto. Run `binto install <owner/repo>` to get started.");
         return Ok(());
     }
 
@@ -244,7 +244,7 @@ pub async fn cmd_update(
         if !force {
             print_info(&format!(
                 "{tool_name} is pinned to {tag}. \
-                 Re-run `ghr update {tool_name} --force` to update it to the latest release \
+                 Re-run `binto update {tool_name} --force` to update it to the latest release \
                  (this clears the pin)."
             ));
             return Ok(());
@@ -334,7 +334,7 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
         if json {
             println!("[]");
         } else {
-            print_info("No tools managed by ghr.");
+            print_info("No tools managed by binto.");
         }
         return Ok(());
     }
@@ -438,7 +438,7 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
         if any_updates {
             print_status(&format!(
                 "\n{}",
-                console::style("Updates available — run `ghr update --all`").yellow()
+                console::style("Updates available — run `binto update --all`").yellow()
             ));
         }
     }

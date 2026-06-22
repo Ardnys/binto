@@ -4,7 +4,7 @@ pub mod score;
 
 use anyhow::Result;
 
-use crate::error::GhrError;
+use crate::error::BintoError;
 use crate::github::types::Asset;
 use filter::apply_hard_filters;
 use score::{CONFIDENCE_THRESHOLD, ScoredAsset, score_and_rank};
@@ -45,7 +45,7 @@ pub fn match_asset(
     let candidates = apply_hard_filters(all_assets);
 
     if candidates.is_empty() {
-        return Err(GhrError::NoCompatibleAssets {
+        return Err(BintoError::NoCompatibleAssets {
             repo: repo.to_string(),
             tag: tag.to_string(),
         }
@@ -56,7 +56,7 @@ pub fn match_asset(
     let scored = score_and_rank(candidates, user_arch);
 
     if scored.is_empty() {
-        return Err(GhrError::NoCompatibleAssets {
+        return Err(BintoError::NoCompatibleAssets {
             repo: repo.to_string(),
             tag: tag.to_string(),
         }

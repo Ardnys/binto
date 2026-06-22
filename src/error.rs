@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
-pub enum GhrError {
+pub enum BintoError {
     #[error("GitHub API error {status}: {message}")]
     ApiError { status: u16, message: String },
 
@@ -24,7 +24,7 @@ pub enum GhrError {
     #[error("Binary not found in archive after extraction")]
     BinaryNotFoundInArchive,
 
-    #[error("Tool '{name}' is not managed by ghr")]
+    #[error("Tool '{name}' is not managed by binto")]
     UnknownTool { name: String },
 
     #[error("Install directory {path} does not exist and could not be created")]

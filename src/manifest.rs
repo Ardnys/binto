@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value, value};
 
 use crate::config::config_dir;
-use crate::error::GhrError;
+use crate::error::BintoError;
 
-/// Declarative, portable list of tools ghr should manage. Lives at
-/// `~/.config/ghr/manifest.toml` alongside `config.toml`. Unlike `state.toml` (a local
+/// Declarative, portable list of tools binto should manage. Lives at
+/// `~/.config/binto/manifest.toml` alongside `config.toml`. Unlike `state.toml` (a local
 /// runtime cache of install paths / sha256 / etags), the manifest holds only the portable
 /// identity of each tool — its `repo`, an optional pinned `tag`, and an optional install
 /// `alias` — so it can be committed to dotfiles and replayed on another machine with
-/// `ghr sync`.
+/// `binto sync`.
 ///
 /// Reads parse into this typed view (comments are ignored, as they're not data). Writes go
 /// through the format-preserving `*_and_save` methods, which edit the on-disk TOML document
@@ -52,7 +52,7 @@ impl Manifest {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
 
-        toml::from_str(&raw).map_err(|e| GhrError::StateCorrupted(e.to_string()).into())
+        toml::from_str(&raw).map_err(|e| BintoError::StateCorrupted(e.to_string()).into())
     }
 
     pub fn get(&self, repo: &str) -> Option<&ManifestEntry> {
@@ -77,7 +77,7 @@ impl Manifest {
     // (see `set_str`), only dropped when the key itself is removed.
 
     /// Insert or update `repo`'s row, recording both `tag` and `alias` (`None` clears that
-    /// key). Used by `ghr install` / `ghr sync`, which know both up front.
+    /// key). Used by `binto install` / `binto sync`, which know both up front.
     pub fn record_and_save(repo: &str, tag: Option<&str>, alias: Option<&str>) -> Result<()> {
         let mut doc = Self::load_doc()?;
         edit_tool(&mut doc, repo, |t| {
@@ -114,7 +114,7 @@ impl Manifest {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         raw.parse::<DocumentMut>()
-            .map_err(|e| GhrError::StateCorrupted(e.to_string()).into())
+            .map_err(|e| BintoError::StateCorrupted(e.to_string()).into())
     }
 
     /// Atomically write `doc` back to the manifest path (write-temp-then-rename).
@@ -140,7 +140,7 @@ fn tools_mut(doc: &mut DocumentMut) -> Result<&mut ArrayOfTables> {
         .entry("tools")
         .or_insert(Item::ArrayOfTables(ArrayOfTables::new()));
     item.as_array_of_tables_mut().ok_or_else(|| {
-        anyhow::Error::from(GhrError::StateCorrupted(
+        anyhow::Error::from(BintoError::StateCorrupted(
             "`tools` is not an array of tables".to_string(),
         ))
     })

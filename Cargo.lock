@@ -116,6 +116,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "binto"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "bzip2 0.4.4",
+ "chrono",
+ "clap",
+ "console 0.15.11",
+ "ctrlc",
+ "dialoguer",
+ "dirs",
+ "flate2",
+ "futures-util",
+ "glob",
+ "hex",
+ "indexmap",
+ "indicatif",
+ "liblzma",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "toml_edit",
+ "tracing",
+ "tracing-appender",
+ "tracing-indicatif",
+ "tracing-subscriber",
+ "walkdir",
+ "zip",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -623,43 +660,6 @@ dependencies = [
  "r-efi 6.0.0",
  "wasip2",
  "wasip3",
-]
-
-[[package]]
-name = "ghr"
-version = "0.1.2"
-dependencies = [
- "anyhow",
- "bzip2 0.4.4",
- "chrono",
- "clap",
- "console 0.15.11",
- "ctrlc",
- "dialoguer",
- "dirs",
- "flate2",
- "futures-util",
- "glob",
- "hex",
- "indexmap",
- "indicatif",
- "liblzma",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "toml_edit",
- "tracing",
- "tracing-appender",
- "tracing-indicatif",
- "tracing-subscriber",
- "walkdir",
- "zip",
 ]
 
 [[package]]

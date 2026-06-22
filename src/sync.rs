@@ -29,7 +29,7 @@ struct PendingSync {
     install_dir: PathBuf,
 }
 
-/// `ghr sync`: install every tool in the manifest that isn't already in local state.
+/// `binto sync`: install every tool in the manifest that isn't already in local state.
 /// Pinned entries install their exact tag; the rest install the latest release. Tools
 /// already present are left untouched (re-versioning is `update`'s job, not `sync`'s).
 ///
@@ -229,7 +229,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
 
 /// Remove managed tools whose repo is no longer in the manifest (the manifest is the source
 /// of truth). State is keyed by binary name, the manifest by repo. Lists the candidates and
-/// confirms before deleting unless `yes` is set. Unlike `ghr remove`, this does NOT touch the
+/// confirms before deleting unless `yes` is set. Unlike `binto remove`, this does NOT touch the
 /// manifest — the tools are already absent from it, which is exactly why they're pruned.
 fn prune_extras(state: &mut State, manifest: &Manifest, yes: bool) -> Result<()> {
     let extras: Vec<(String, PathBuf)> = state
