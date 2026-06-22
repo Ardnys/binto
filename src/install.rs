@@ -16,8 +16,6 @@ use crate::state::State;
 pub enum ReleaseSelection {
     /// Install this exact tag (version pinning). Resolved via `get_release_by_tag`.
     Tag(String),
-    /// Install the newest non-draft release without prompting (used by `sync`).
-    Latest,
     /// Show the interactive release picker (the default `ghr install` flow).
     InteractivePick,
 }
@@ -72,14 +70,6 @@ impl InstallRequest<'_> {
     async fn resolve_release(&self, client: &GithubClient, config: &Config) -> Result<Release> {
         let release = match &self.selection {
             ReleaseSelection::Tag(tag) => client.get_release_by_tag(self.repo, tag).await?,
-            ReleaseSelection::Latest => {
-                let mut releases = client.list_releases(self.repo).await?;
-                filter_releases(&mut releases, self.include_prerelease, config);
-                releases
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("no releases found for {}", self.repo))?
-            }
             ReleaseSelection::InteractivePick => {
                 let mut releases = client.list_releases(self.repo).await?;
                 filter_releases(&mut releases, self.include_prerelease, config);
