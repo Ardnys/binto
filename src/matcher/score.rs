@@ -184,7 +184,8 @@ pub fn score_and_rank(assets: Vec<Asset>, user_arch: &str, prefer_libc: Libc) ->
         .collect();
 
     scored.sort_by_key(|b| std::cmp::Reverse(b.score.total));
-    for s in scored.iter().take(3) {
+    for s in &scored {
+        // print each asset and their score, good for debugging strange asset scores
         debug!("Asset {:?} - Score: {:?}", s.asset.name, s.score);
     }
     scored

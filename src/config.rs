@@ -49,9 +49,9 @@ impl Default for Config {
 
 // TODO: .local/share/binto/bin is a safer default than populating .local/bin, which could be used already
 fn default_install_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".local/bin")
+    dirs::data_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
+        .join("binto/bin")
 }
 
 /// Expand a leading `~` in `path` to the user's home directory. Paths without a `~` prefix
