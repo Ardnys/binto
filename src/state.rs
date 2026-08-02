@@ -13,10 +13,12 @@ pub struct State {
     pub tools: IndexMap<String, ToolEntry>,
 }
 
+// TODO: why not `str`
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolEntry {
     pub repo: String,
     pub installed_tag: String,
+    // TODO: does this really have to be a PathBuf? Why not Path? It's not mutated
     pub install_path: PathBuf,
     pub binary_name: String,
     pub asset_pattern: String,
@@ -145,6 +147,7 @@ impl State {
         self.tools.shift_remove(name)
     }
 
+    // TODO: &String is suspicious
     pub fn iter(&self) -> impl Iterator<Item = (&String, &ToolEntry)> {
         self.tools.iter()
     }

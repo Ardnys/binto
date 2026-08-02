@@ -19,11 +19,21 @@ mod ui_format;
 mod uninstall;
 mod update;
 
+use std::io::{Read, Write};
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use console::style;
+use serde::{Deserialize, Serialize};
+use matcher::score::ScoredAsset;
+use matcher::{MatchOutput, match_asset};
 
 use cli::{Cli, Commands};
+use config::Libc;
+use error::BintoError;
+use github::types::Asset;
+use installer::checksum::find_checksum_asset;
 
 /// Return the first path on $PATH where `name` exists as a file, if any.
 fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
@@ -67,7 +77,7 @@ use config::Config;
 use output::{print_error, print_info, print_status, print_success, print_warning};
 use state::{State, ToolEntry};
 
-use crate::manifest::Manifest;
+use crate::{manifest::Manifest, matcher::score::detect_arch};
 
 #[tokio::main]
 async fn main() {
@@ -103,8 +113,11 @@ fn install_ctrlc_handler() {
 async fn run(cli: Cli) -> Result<()> {
     let config = Config::load()?;
 
-    // Stale-check banner: warn if any tool hasn't been checked recently
-    maybe_print_stale_banner(&config);
+    // Stale-check banner: warn if any tool hasn't been checked recently. Skipped for `match`,
+    // whose stderr must stay a clean decision trace for the test harness.
+    if !matches!(cli.command, Commands::Match { .. }) {
+        maybe_print_stale_banner(&config);
+    }
 
     match cli.command {
         Commands::Install {
@@ -143,6 +156,15 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Uninstall => {
             uninstall::cmd_uninstall()?;
         }
+        Commands::Match {
+            repo,
+            file,
+            tag,
+            arch,
+            libc,
+        } => {
+            cmd_match_asset(&repo, file, tag, arch, libc, &config)?;
+        }
         Commands::SetupTimer => {
             timer::cmd_setup_timer()?;
         }
@@ -177,6 +199,154 @@ fn maybe_print_stale_banner(config: &Config) {
             .yellow()
         ));
     }
+}
+
+/// A release fed to `binto match`. Deserializes both a raw GitHub release response (`tag_name`,
+/// `assets`) and a hand-written fixture (`{"tag": "...", "assets": [...]}`); unknown fields are
+/// ignored. Only `name` on each asset is required — the matcher looks at nothing else.
+#[derive(Deserialize)]
+struct MatchInput {
+    #[serde(alias = "tag_name")]
+    tag: Option<String>,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+/// One ranked asset in the verdict.
+#[derive(Serialize)]
+struct Candidate {
+    name: String,
+    score: i32,
+    arch_match: String,
+}
+
+impl From<&ScoredAsset> for Candidate {
+    fn from(s: &ScoredAsset) -> Self {
+        Candidate {
+            name: s.asset.name.clone(),
+            score: s.score.total,
+            arch_match: s.score.arch_match.to_string(),
+        }
+    }
+}
+
+/// The machine-readable result the test harness reads from stdout.
+#[derive(Serialize)]
+struct MatchVerdict {
+    repo: String,
+    tag: String,
+    arch: String,
+    libc: String,
+    /// `auto_selected`, `needs_interaction`, or `no_match`.
+    outcome: &'static str,
+    /// The chosen asset, present only for `auto_selected`.
+    selected: Option<Candidate>,
+    /// The checksum asset covering `selected`, if one was found.
+    checksum: Option<String>,
+    /// Every positively-scored asset, ranked best-first.
+    candidates: Vec<Candidate>,
+}
+
+/// Run the matcher against a release read from a file (or stdin) and print a JSON verdict to
+/// stdout. The per-decision trace is emitted on stderr via `tracing` (JSON when
+/// `BINTO_LOG_FORMAT=json`). Exit code encodes the outcome for the harness: 0 auto-selected,
+/// 42 needs interaction, 43 no compatible asset.
+fn cmd_match_asset(
+    repo: &str,
+    file: Option<PathBuf>,
+    tag_override: Option<String>,
+    arch_override: Option<String>,
+    libc_override: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let raw = match file {
+        Some(p) if p.as_os_str() != "-" => std::fs::read_to_string(&p)
+            .with_context(|| format!("failed to read release file {}", p.display()))?,
+        _ => {
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("failed to read release JSON from stdin")?;
+            buf
+        }
+    };
+
+    let input: MatchInput = serde_json::from_str(&raw).context(
+        "failed to parse release JSON (expected a GitHub release object or {\"assets\": [...]})",
+    )?;
+
+    let tag = tag_override
+        .or(input.tag)
+        .unwrap_or_else(|| "unknown".to_string());
+    let arch = arch_override.unwrap_or_else(detect_arch);
+    let prefer_libc = match libc_override.as_deref() {
+        None => config.prefer_libc,
+        Some("gnu") => Libc::Gnu,
+        Some("musl") => Libc::Musl,
+        Some(other) => anyhow::bail!("invalid --libc '{other}' (expected 'gnu' or 'musl')"),
+    };
+    let libc = match prefer_libc {
+        Libc::Gnu => "gnu",
+        Libc::Musl => "musl",
+    };
+
+    let assets = input.assets;
+    let result = match_asset(assets.clone(), &arch, None, repo, &tag, prefer_libc);
+
+    let (verdict, exit_code) = match result {
+        Ok(MatchOutput::AutoSelected(s)) => {
+            let checksum = find_checksum_asset(&s.asset.name, &assets).map(|a| a.name.clone());
+            let verdict = MatchVerdict {
+                repo: repo.to_string(),
+                tag,
+                arch,
+                libc: libc.to_string(),
+                outcome: "auto_selected",
+                selected: Some(Candidate::from(&s)),
+                checksum,
+                candidates: vec![Candidate::from(&s)],
+            };
+            (verdict, 0)
+        }
+        Ok(MatchOutput::NeedsInteraction(scored)) => {
+            let verdict = MatchVerdict {
+                repo: repo.to_string(),
+                tag,
+                arch,
+                libc: libc.to_string(),
+                outcome: "needs_interaction",
+                selected: None,
+                checksum: None,
+                candidates: scored.iter().map(Candidate::from).collect(),
+            };
+            (verdict, 42)
+        }
+        // A missing/incompatible asset is a normal harness outcome, not a hard error — report it
+        // as a verdict. Any other error (there are none today) propagates.
+        Err(e) if e.downcast_ref::<BintoError>().is_some() => {
+            let verdict = MatchVerdict {
+                repo: repo.to_string(),
+                tag,
+                arch,
+                libc: libc.to_string(),
+                outcome: "no_match",
+                selected: None,
+                checksum: None,
+                candidates: vec![],
+            };
+            (verdict, 43)
+        }
+        Err(e) => return Err(e),
+    };
+
+    // Write the verdict to stdout and flush explicitly: `process::exit` skips destructors, so a
+    // block-buffered pipe would otherwise drop it.
+    let mut out = std::io::stdout();
+    writeln!(out, "{}", serde_json::to_string_pretty(&verdict)?)
+        .and_then(|_| out.flush())
+        .context("failed to write verdict to stdout")?;
+
+    std::process::exit(exit_code);
 }
 
 fn cmd_list(json: bool, _config: &Config) -> Result<()> {

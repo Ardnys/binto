@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use tracing::{Span, debug};
+use tracing::debug;
 
 use crate::config::Libc;
 use crate::github::types::Asset;
@@ -11,13 +11,15 @@ const SCORE_ARCH_SYNONYM: i32 = 800;
 const SCORE_LINUX_KEYWORD: i32 = 200;
 const SCORE_PREFERRED_LIBC: i32 = 400;
 const PENALTY_OTHER_LIBC: i32 = -100; // other libc gets a penalty, to satisfy the threshold
-const SCORE_FORMAT_RAW: i32 = 400;
-const SCORE_FORMAT_TAR: i32 = 300;
-const SCORE_FORMAT_ZIP: i32 = 200;
-const SCORE_FORMAT_APPIMG: i32 = 100;
+const SCORE_FORMAT_RAW: i32 = 50; // now raw and archives are very close and falls to interaction
+const SCORE_FORMAT_TAR: i32 = 450;
+const SCORE_FORMAT_ZIP: i32 = 50;
+const SCORE_FORMAT_APPIMG: i32 = 10;
 const SCORE_FORMAT_REJECT: i32 = -9999;
 pub const CONFIDENCE_THRESHOLD: i32 = 400;
+// TODO: there's also 32bit ones that we have to eliminate later probs
 
+// TODO: there's mips and variants, ppc64
 const ARCH_SYNONYMS: &[(&str, &[&str])] = &[
     ("x86_64", &["x86_64", "amd64", "x64", "amd_64"]),
     ("aarch64", &["aarch64", "arm64"]),
@@ -100,26 +102,39 @@ pub fn score_asset(asset: &Asset, user_arch_raw: &str, prefer_libc: Libc) -> Ass
 
     let mut total = 0i32;
 
+    // TODO: SBOM handling will be done later. Just reject them right now
+    if name.ends_with("sbom.json") {
+        total += SCORE_FORMAT_REJECT;
+    }
+
     // Arch scoring
-    let arch_match = if user_syns.iter().any(|s| name.contains(s)) {
+    let mut arch_term = "";
+    let arch_score;
+    let arch_match = if let Some(term) = user_syns.iter().find(|s| name.contains(*s)) {
+        arch_term = term;
         // Check if it's the exact canonical form
         if name.contains(user_canonical) {
-            total += SCORE_ARCH_EXACT;
+            arch_term = user_canonical;
+            arch_score = SCORE_ARCH_EXACT;
             ArchMatch::Exact
         } else {
-            total += SCORE_ARCH_SYNONYM;
+            arch_score = SCORE_ARCH_SYNONYM;
             ArchMatch::Synonym
         }
-    } else if foreign_terms.iter().any(|t| name.contains(t)) {
+    } else if let Some(term) = foreign_terms.iter().find(|t| name.contains(*t)) {
         // Contains a term from a different arch — hard penalize
-        total += SCORE_FORMAT_REJECT;
+        arch_term = term;
+        arch_score = SCORE_FORMAT_REJECT;
         ArchMatch::None
     } else {
+        arch_score = 0;
         ArchMatch::None
     };
+    total += arch_score;
 
     // Linux keyword bonus
-    if name.contains("linux") {
+    let linux_keyword = name.contains("linux");
+    if linux_keyword {
         total += SCORE_LINUX_KEYWORD;
     }
 
@@ -127,39 +142,64 @@ pub fn score_asset(asset: &Asset, user_arch_raw: &str, prefer_libc: Libc) -> Ass
     // (smaller bonus) so a tool shipping only the non-preferred libc still installs.
     let is_gnu = name.contains("gnu") || name.contains("glibc");
     let is_musl = name.contains("musl") || name.contains("static");
-    if is_gnu {
-        // score preferred libc higher
-        total += if prefer_libc == Libc::Gnu {
-            SCORE_PREFERRED_LIBC
-        } else {
-            PENALTY_OTHER_LIBC
-        };
+    let libc_detected = if is_gnu {
+        "gnu"
     } else if is_musl {
-        // score preferred libc higher
-        total += if prefer_libc == Libc::Musl {
+        "musl"
+    } else {
+        "none"
+    };
+    let libc_score = if is_gnu {
+        if prefer_libc == Libc::Gnu {
             SCORE_PREFERRED_LIBC
         } else {
             PENALTY_OTHER_LIBC
-        };
-    }
+        }
+    } else if is_musl {
+        if prefer_libc == Libc::Musl {
+            SCORE_PREFERRED_LIBC
+        } else {
+            PENALTY_OTHER_LIBC
+        }
+    } else {
+        0
+    };
+    total += libc_score;
 
     // Format scoring — strip from right to handle compound extensions
-    if name.ends_with(".deb") || name.ends_with(".rpm") {
-        total += SCORE_FORMAT_REJECT;
+    let (format, format_score) = if name.ends_with(".deb") || name.ends_with(".rpm") {
+        ("reject", SCORE_FORMAT_REJECT)
     } else if name.ends_with(".tar.gz")
         || name.ends_with(".tar.xz")
+        || name.ends_with(".tar.zst")
         || name.ends_with(".tar.bz2")
         || name.ends_with(".tgz")
+    // TODO: there's also .bz2, .gz
     {
-        total += SCORE_FORMAT_TAR;
+        ("tar", SCORE_FORMAT_TAR)
     } else if name.ends_with(".zip") {
-        total += SCORE_FORMAT_ZIP;
-    } else if name.to_lowercase().ends_with(".appimage") {
-        total += SCORE_FORMAT_APPIMG;
+        ("zip", SCORE_FORMAT_ZIP)
+    } else if name.ends_with(".appimage") {
+        ("appimage", SCORE_FORMAT_APPIMG)
     } else {
         // No known archive extension → treat as raw binary
-        total += SCORE_FORMAT_RAW;
-    }
+        ("raw", SCORE_FORMAT_RAW)
+    };
+    total += format_score;
+
+    debug!(
+        asset = %asset.name,
+        arch_match = %arch_match,
+        arch_term,
+        arch_score,
+        linux_keyword,
+        libc_detected,
+        libc_score,
+        format,
+        format_score,
+        total,
+        "scored asset"
+    );
 
     AssetScore { arch_match, total }
 }
@@ -173,20 +213,35 @@ pub struct ScoredAsset {
 /// Score and sort a list of pre-filtered assets. Returns sorted descending by score.
 /// Assets with SCORE_FORMAT_REJECT or foreign-arch penalty are excluded.
 pub fn score_and_rank(assets: Vec<Asset>, user_arch: &str, prefer_libc: Libc) -> Vec<ScoredAsset> {
-    let _span = Span::current();
     let mut scored: Vec<ScoredAsset> = assets
         .into_iter()
         .map(|a| {
             let score = score_asset(&a, user_arch, prefer_libc);
             ScoredAsset { asset: a, score }
         })
-        .filter(|s| s.score.total > 0)
+        .filter(|s| {
+            let keep = s.score.total > 0;
+            if !keep {
+                debug!(
+                    asset = %s.asset.name,
+                    total = s.score.total,
+                    reason = "non_positive_score",
+                    "asset excluded from ranking"
+                );
+            }
+            keep
+        })
         .collect();
 
     scored.sort_by_key(|b| std::cmp::Reverse(b.score.total));
-    for s in &scored {
-        // print each asset and their score, good for debugging strange asset scores
-        debug!("Asset {:?} - Score: {:?}", s.asset.name, s.score);
+    for (rank, s) in scored.iter().enumerate() {
+        debug!(
+            asset = %s.asset.name,
+            rank,
+            total = s.score.total,
+            arch_match = %s.score.arch_match,
+            "ranked asset"
+        );
     }
     scored
 }

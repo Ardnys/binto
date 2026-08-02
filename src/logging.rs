@@ -5,6 +5,10 @@
 //! Verbosity: `-v`/`-vv`/`-q` control the *terminal* level; `BINTO_LOG` controls the *file* level
 //! (`BINTO_LOG=off` disables the file). The file defaults to `debug` so a failed install is always
 //! diagnosable after the fact.
+//!
+//! Format: `BINTO_LOG_FORMAT=json` switches stderr to newline-delimited JSON events (for the
+//! matching test harness) and drops the progress bars so the stream stays machine-parseable.
+//! The file log keeps its plain-text format either way.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -22,8 +26,8 @@ use crate::ui_format::UiFormat;
 
 /// Wraps a writer to strip ANSI escape codes. The terminal-facing status lines pre-render their
 /// color with `console::style`, so that color is baked into the event message; the file log must
-/// not contain it. `with_ansi(false)` only stops the *formatter* from adding color — it doesn't
-/// touch color already inside a field — so we strip it here on the way to the file.
+/// not contain it. `with_ansi(false)` only stops the *formatter* from adding color. It doesn't
+/// touch color already inside a field so we strip it here on the way to the file.
 struct StripAnsi<W>(W);
 
 impl<W: Write> Write for StripAnsi<W> {
@@ -48,6 +52,24 @@ impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for StripAnsiMakeWriter<M> {
 
     fn make_writer(&'a self) -> Self::Writer {
         StripAnsi(self.0.make_writer())
+    }
+}
+
+/// Terminal log format, selected by `BINTO_LOG_FORMAT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogFormat {
+    /// Styled CLI output (default).
+    Pretty,
+    /// Newline-delimited JSON on stderr, for the test harness.
+    Json,
+}
+
+impl LogFormat {
+    fn from_env() -> Self {
+        match std::env::var("BINTO_LOG_FORMAT") {
+            Ok(v) if v.eq_ignore_ascii_case("json") => Self::Json,
+            _ => Self::Pretty,
+        }
     }
 }
 
@@ -131,26 +153,47 @@ where
 /// for the lifetime of the process — dropping it early truncates the file log — so `main` keeps
 /// it in a binding that lives until exit.
 pub fn init(verbose: u8, quiet: bool) -> Option<WorkerGuard> {
-    let indicatif_layer = IndicatifLayer::new();
-    let stderr_writer = indicatif_layer.get_stderr_writer();
-
-    let terminal_layer = fmt::layer()
-        .event_format(UiFormat)
-        .with_writer(stderr_writer)
-        .with_filter(terminal_filter(verbose, quiet));
-
     let (file_layer, guard) = match file_layer(verbose) {
         Some((layer, guard)) => (Some(layer), Some(guard)),
         None => (None, None),
     };
 
-    tracing_subscriber::registry()
-        .with(file_layer)
-        .with(terminal_layer)
-        // Only spans carrying an `indicatif.pb_show` field render a bar (download spans);
-        // everything else is just structured context.
-        .with(indicatif_layer.with_filter(IndicatifFilter::new(false)))
-        .init();
+    match LogFormat::from_env() {
+        LogFormat::Pretty => {
+            let indicatif_layer = IndicatifLayer::new();
+            let stderr_writer = indicatif_layer.get_stderr_writer();
+
+            let terminal_layer = fmt::layer()
+                .event_format(UiFormat)
+                .with_writer(stderr_writer)
+                .with_filter(terminal_filter(verbose, quiet));
+
+            tracing_subscriber::registry()
+                .with(file_layer)
+                .with(terminal_layer)
+                // Only spans carrying an `indicatif.pb_show` field render a bar (download spans);
+                // everything else is just structured context.
+                .with(indicatif_layer.with_filter(IndicatifFilter::new(false)))
+                .init();
+        }
+        LogFormat::Json => {
+            // One JSON object per line on stderr; flattened fields and the span chain included so
+            // the harness can trace each decision back through match_asset → score. No indicatif
+            // layer — progress bars would corrupt the stream.
+            let terminal_layer = fmt::layer()
+                .json()
+                .flatten_event(true)
+                .with_current_span(true)
+                .with_span_list(true)
+                .with_writer(io::stderr)
+                .with_filter(terminal_filter(verbose, quiet));
+
+            tracing_subscriber::registry()
+                .with(file_layer)
+                .with(terminal_layer)
+                .init();
+        }
+    }
 
     guard
 }

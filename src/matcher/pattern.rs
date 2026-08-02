@@ -18,13 +18,16 @@ pub fn asset_to_pattern(asset_name: &str, tag: &str) -> String {
 /// Returns matching asset names.
 pub fn match_pattern<'a>(pattern: &str, asset_names: &[&'a str]) -> Vec<&'a str> {
     let Ok(pat) = glob::Pattern::new(pattern) else {
+        tracing::debug!(pattern, "stored pattern is not a valid glob");
         return vec![];
     };
-    asset_names
+    let matched: Vec<&str> = asset_names
         .iter()
         .filter(|name| pat.matches(name))
         .copied()
-        .collect()
+        .collect();
+    tracing::debug!(pattern, match_count = matched.len(), "matched stored pattern");
+    matched
 }
 
 #[cfg(test)]

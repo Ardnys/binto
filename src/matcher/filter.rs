@@ -1,9 +1,21 @@
+use tracing::debug;
+
 use crate::github::types::Asset;
 
 const CHECKSUM_EXTENSIONS: &[&str] = &[
-    ".sha256", ".sha512", ".sha1", ".md5", ".sig", ".asc", ".minisig", ".b64",
+    ".sha256",
+    ".sha512",
+    ".sha1",
+    ".md5",
+    ".sig",
+    ".asc",
+    ".minisig",
+    ".b64",
+    ".sigstore.json",
 ];
 
+// TODO: checksum names could be after the archive
+// TODO: there's also sigstore.json
 const CHECKSUM_NAMES: &[&str] = &[
     "checksums.txt",
     "sha256sums",
@@ -17,9 +29,17 @@ const CHECKSUM_NAMES: &[&str] = &[
     "checksum.txt",
 ];
 
-const OS_REJECT_TERMS: &[&str] = &["windows", "darwin", "macos", "osx", "win32", "win64"];
+// TODO: also parse sbom.json files
+// apparently they are good for security. It would be a good investigation to see
+// which repositories ship it and stuff.
 
-const OS_REJECT_EXTENSIONS: &[&str] = &[".exe", ".msi", ".dmg", ".pkg"];
+// TODO: there's winx, dragonfly
+const OS_REJECT_TERMS: &[&str] = &[
+    "windows", "darwin", "macos", "osx", "win32", "win64", "freebsd", "netbsd", "mac", "openbsd",
+    "solaris", "android",
+];
+
+const OS_REJECT_EXTENSIONS: &[&str] = &[".exe", ".msi", ".dmg", ".pkg", ".apk"];
 
 /// Remove GitHub-generated source archives (they have no arch/OS specificity).
 pub fn filter_source_archives(assets: Vec<Asset>) -> Vec<Asset> {
@@ -41,7 +61,11 @@ pub fn filter_source_archives(assets: Vec<Asset>) -> Vec<Asset> {
             // source archives in the `assets` array at all — they appear only in
             // tarball_url / zipball_url fields. So this filter is mostly a safety net
             // for manually uploaded source tarballs named like source archives.
-            !is_source_archive(&n)
+            let keep = !is_source_archive(&n);
+            if !keep {
+                debug!(asset = %a.name, reason = "source_archive", "filtered out asset");
+            }
+            keep
         })
         .collect()
 }
@@ -62,9 +86,14 @@ pub fn filter_checksums(assets: Vec<Asset>) -> Vec<Asset> {
         .into_iter()
         .filter(|a| {
             let lower = a.name.to_lowercase();
-            let is_checksum_ext = CHECKSUM_EXTENSIONS.iter().any(|ext| lower.ends_with(ext));
+            let checksum_ext = CHECKSUM_EXTENSIONS.iter().find(|ext| lower.ends_with(*ext));
             let is_checksum_name = CHECKSUM_NAMES.iter().any(|name| lower == *name);
-            !is_checksum_ext && !is_checksum_name
+            if let Some(ext) = checksum_ext {
+                debug!(asset = %a.name, reason = "checksum_extension", term = ext, "filtered out asset");
+            } else if is_checksum_name {
+                debug!(asset = %a.name, reason = "checksum_name", "filtered out asset");
+            }
+            checksum_ext.is_none() && !is_checksum_name
         })
         .collect()
 }
@@ -75,9 +104,16 @@ pub fn filter_os(assets: Vec<Asset>) -> Vec<Asset> {
         .into_iter()
         .filter(|a| {
             let lower = a.name.to_lowercase();
-            let has_reject_term = OS_REJECT_TERMS.iter().any(|t| lower.contains(t));
-            let has_reject_ext = OS_REJECT_EXTENSIONS.iter().any(|ext| lower.ends_with(ext));
-            !has_reject_term && !has_reject_ext
+            let reject_term = OS_REJECT_TERMS.iter().find(|t| lower.contains(*t));
+            let reject_ext = OS_REJECT_EXTENSIONS
+                .iter()
+                .find(|ext| lower.ends_with(*ext));
+            if let Some(term) = reject_term {
+                debug!(asset = %a.name, reason = "os_reject_term", term, "filtered out asset");
+            } else if let Some(ext) = reject_ext {
+                debug!(asset = %a.name, reason = "os_reject_ext", term = ext, "filtered out asset");
+            }
+            reject_term.is_none() && reject_ext.is_none()
         })
         .collect()
 }

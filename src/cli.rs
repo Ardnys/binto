@@ -121,6 +121,30 @@ pub enum Commands {
     /// It would just orphan binto's data.
     #[command(verbatim_doc_comment)]
     Uninstall,
+    /// Run the asset-matching algorithm against a release JSON file and print the verdict.
+    ///
+    /// For the matching test harness — not intended for end users. Reads a release JSON
+    /// (a GitHub release response, or `{"tag": "...", "assets": [...]}`) from a file or stdin,
+    /// runs the matcher, and writes a single JSON verdict to stdout. The decision-point trace
+    /// goes to stderr (as JSON when `BINTO_LOG_FORMAT=json` and `-v`/`-vv` are set). Exit code:
+    /// 0 = auto-selected, 42 = needs interaction, 43 = no compatible asset.
+    #[command(hide = true, verbatim_doc_comment)]
+    Match {
+        /// Repository label (owner/repo) — recorded in the verdict and trace, not fetched.
+        repo: String,
+        /// Release JSON file. Reads stdin when omitted or `-`.
+        #[arg(short = 'f', long, value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// Override the release tag (default: the file's `tag_name`/`tag`, else "unknown").
+        #[arg(short = 't', long)]
+        tag: Option<String>,
+        /// Target architecture to match for (default: the host's `uname -m`).
+        #[arg(short = 'a', long)]
+        arch: Option<String>,
+        /// Preferred libc: `gnu` or `musl` (default: the configured `prefer_libc`).
+        #[arg(long)]
+        libc: Option<String>,
+    },
 
     /// Generate and optionally enable a systemd user timer for automatic update checks
     SetupTimer,

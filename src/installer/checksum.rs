@@ -63,6 +63,7 @@ fn digest_algo(s: &str) -> Option<ChecksumAlgo> {
 const SIDECAR_EXTS: &[&str] = &[
     "sha256", "sha512", "sha384", "sha224", "sha2", "sha", "digest", "checksum",
 ];
+// TODO: there's also sigstore.json
 
 /// Find the checksum asset that covers `target_name` in the full asset list.
 ///
@@ -78,12 +79,32 @@ pub fn find_checksum_asset<'a>(target_name: &str, all_assets: &'a [Asset]) -> Op
             .and_then(|rest| rest.strip_prefix('.'))
             .is_some_and(|ext| SIDECAR_EXTS.contains(&ext))
     }) {
+        tracing::debug!(
+            target = target_name,
+            checksum_asset = %sidecar.name,
+            kind = "sidecar",
+            "found checksum asset"
+        );
         return Some(sidecar);
     }
 
-    all_assets
+    let generic = all_assets
         .iter()
-        .find(|a| is_generic_checksums_file(&a.name))
+        .find(|a| is_generic_checksums_file(&a.name));
+    match generic {
+        Some(a) => tracing::debug!(
+            target = target_name,
+            checksum_asset = %a.name,
+            kind = "generic",
+            "found checksum asset"
+        ),
+        None => tracing::debug!(
+            target = target_name,
+            asset_count = all_assets.len(),
+            "no checksum asset found"
+        ),
+    }
+    generic
 }
 
 // WARN: handle non-generic ones like the ones with versions
@@ -111,12 +132,14 @@ fn is_generic_checksums_file(name: &str) -> bool {
 ///     followed by the filename.
 pub fn parse_checksums(content: &str, filename: &str) -> Option<String> {
     let lower_filename = filename.to_lowercase();
+    let mut lines_scanned = 0usize;
 
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        lines_scanned += 1;
 
         // The hash is the first whitespace-delimited token; everything after it is the filename
         // (which may contain spaces).
@@ -125,6 +148,12 @@ pub fn parse_checksums(content: &str, filename: &str) -> Option<String> {
             // A lone token: a bare-hash sidecar with no accompanying filename.
             None => {
                 if digest_algo(line).is_some() {
+                    tracing::debug!(
+                        filename,
+                        hash_len = line.len(),
+                        entry = "bare_sidecar",
+                        "found checksum entry"
+                    );
                     return Some(line.to_lowercase());
                 }
                 continue;
@@ -137,10 +166,17 @@ pub fn parse_checksums(content: &str, filename: &str) -> Option<String> {
             .unwrap_or(rest)
             .to_lowercase();
         if basename == lower_filename {
+            tracing::debug!(
+                filename,
+                hash_len = hash.len(),
+                entry = "list",
+                "found checksum entry"
+            );
             return Some(hash.to_lowercase());
         }
     }
 
+    tracing::debug!(filename, lines_scanned, "no checksum entry for file");
     None
 }
 

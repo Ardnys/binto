@@ -1,4 +1,5 @@
 /target
 .zed
+.idea
 scripts/
 Justfile

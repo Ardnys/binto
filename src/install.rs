@@ -22,7 +22,7 @@ pub enum ReleaseSelection {
     Latest,
 }
 
-fn filter_releases(releases: &mut Vec<Release>, include_prerelease: bool, config: &Config) {
+pub fn filter_releases(releases: &mut Vec<Release>, include_prerelease: bool, config: &Config) {
     if !include_prerelease && !config.include_prereleases {
         releases.retain(|r| !r.prerelease && !r.draft);
     } else {
