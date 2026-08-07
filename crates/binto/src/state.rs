@@ -13,7 +13,6 @@ pub struct State {
     pub tools: IndexMap<String, ToolEntry>,
 }
 
-// TODO: why not `str`
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ToolEntry {
     pub repo: String,

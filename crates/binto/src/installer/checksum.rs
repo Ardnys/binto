@@ -80,7 +80,7 @@ pub fn find_checksum_asset<'a>(target_name: &str, all_assets: &'a [Asset]) -> Op
             .is_some_and(|ext| SIDECAR_EXTS.contains(&ext))
     }) {
         tracing::debug!(
-            target = target_name,
+            asset = target_name,
             checksum_asset = %sidecar.name,
             kind = "sidecar",
             "found checksum asset"
@@ -93,13 +93,13 @@ pub fn find_checksum_asset<'a>(target_name: &str, all_assets: &'a [Asset]) -> Op
         .find(|a| is_generic_checksums_file(&a.name));
     match generic {
         Some(a) => tracing::debug!(
-            target = target_name,
+            asset = target_name,
             checksum_asset = %a.name,
             kind = "generic",
             "found checksum asset"
         ),
         None => tracing::debug!(
-            target = target_name,
+            asset = target_name,
             asset_count = all_assets.len(),
             "no checksum asset found"
         ),

@@ -13,6 +13,13 @@ pub enum ConditionalResult<T> {
     NotModified,
 }
 
+// TODO: Vendor enum (default: GitHub)
+// TODO: Enum also implements URL parsers (could a trait idk)
+// TODO: Package trait, implemented for each Vendor like GitHub
+// includes : `list_releases`, `latest_release`, `get_release_by_tag`
+//
+// then we'll dispatch Vendors
+
 #[derive(Clone)]
 pub struct GithubClient {
     client: reqwest::Client,

@@ -120,6 +120,7 @@ name = "binto"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "binto-contract",
  "bzip2 0.4.4",
  "chrono",
  "clap",
@@ -150,6 +151,14 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
  "zip",
+]
+
+[[package]]
+name = "binto-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1462,6 +1471,17 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "binto-contract",
+ "clap",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

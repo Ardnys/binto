@@ -3,3 +3,6 @@
 .idea
 scripts/
 Justfile
+
+# Harness run outputs: multi-MB per run and regenerable from the dataset.
+results-*.jsonl

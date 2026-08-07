@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::task::JoinSet;
@@ -46,7 +47,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
 
     let manifest = Manifest::load()?;
     let token = GithubClient::resolve_token(config.github_token.clone());
-    let client = GithubClient::new(token)?;
+    let client = Arc::new(GithubClient::new(token)?);
     let user_arch = crate::matcher::score::detect_arch();
 
     // Phase A: concurrent API checks. Pinned tools are skipped up front so we don't waste

@@ -23,17 +23,21 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use binto_contract::{Candidate, MatchInput, MatchVerdict, Outcome};
 use clap::Parser;
 use console::style;
-use serde::{Deserialize, Serialize};
 use matcher::score::ScoredAsset;
 use matcher::{MatchOutput, match_asset};
 
 use cli::{Cli, Commands};
+use config::Config;
 use config::Libc;
 use error::BintoError;
-use github::types::Asset;
 use installer::checksum::find_checksum_asset;
+use output::{print_error, print_info, print_status, print_success, print_warning};
+use state::{State, ToolEntry};
+
+use crate::{manifest::Manifest, matcher::score::detect_arch};
 
 /// Return the first path on $PATH where `name` exists as a file, if any.
 fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
@@ -48,6 +52,7 @@ fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
     })
 }
 
+// TODO: this is vendor dependent
 /// Accept either "owner/repo" or any github.com URL and return "owner/repo".
 fn parse_repo(input: &str) -> Result<String> {
     let s = input.trim().trim_end_matches('/');
@@ -73,11 +78,6 @@ fn parse_repo(input: &str) -> Result<String> {
         _ => anyhow::bail!("'{input}' is not a valid GitHub URL"),
     }
 }
-use config::Config;
-use output::{print_error, print_info, print_status, print_success, print_warning};
-use state::{State, ToolEntry};
-
-use crate::{manifest::Manifest, matcher::score::detect_arch};
 
 #[tokio::main]
 async fn main() {
@@ -201,50 +201,14 @@ fn maybe_print_stale_banner(config: &Config) {
     }
 }
 
-/// A release fed to `binto match`. Deserializes both a raw GitHub release response (`tag_name`,
-/// `assets`) and a hand-written fixture (`{"tag": "...", "assets": [...]}`); unknown fields are
-/// ignored. Only `name` on each asset is required — the matcher looks at nothing else.
-#[derive(Deserialize)]
-struct MatchInput {
-    #[serde(alias = "tag_name")]
-    tag: Option<String>,
-    #[serde(default)]
-    assets: Vec<Asset>,
-}
-
-/// One ranked asset in the verdict.
-#[derive(Serialize)]
-struct Candidate {
-    name: String,
-    score: i32,
-    arch_match: String,
-}
-
-impl From<&ScoredAsset> for Candidate {
-    fn from(s: &ScoredAsset) -> Self {
-        Candidate {
-            name: s.asset.name.clone(),
-            score: s.score.total,
-            arch_match: s.score.arch_match.to_string(),
-        }
+/// Build a verdict [`Candidate`] from a scored asset. The type itself lives in
+/// `binto-contract` because the harness deserializes it.
+fn candidate_of(s: &ScoredAsset) -> Candidate {
+    Candidate {
+        name: s.asset.name.clone(),
+        score: s.score.total,
+        arch_match: s.score.arch_match.to_string(),
     }
-}
-
-/// The machine-readable result the test harness reads from stdout.
-#[derive(Serialize)]
-struct MatchVerdict {
-    repo: String,
-    tag: String,
-    arch: String,
-    libc: String,
-    /// `auto_selected`, `needs_interaction`, or `no_match`.
-    outcome: &'static str,
-    /// The chosen asset, present only for `auto_selected`.
-    selected: Option<Candidate>,
-    /// The checksum asset covering `selected`, if one was found.
-    checksum: Option<String>,
-    /// Every positively-scored asset, ranked best-first.
-    candidates: Vec<Candidate>,
 }
 
 /// Run the matcher against a release read from a file (or stdin) and print a JSON verdict to
@@ -293,49 +257,42 @@ fn cmd_match_asset(
     let assets = input.assets;
     let result = match_asset(assets.clone(), &arch, None, repo, &tag, prefer_libc);
 
-    let (verdict, exit_code) = match result {
+    let verdict = match result {
         Ok(MatchOutput::AutoSelected(s)) => {
             let checksum = find_checksum_asset(&s.asset.name, &assets).map(|a| a.name.clone());
-            let verdict = MatchVerdict {
+            MatchVerdict {
                 repo: repo.to_string(),
                 tag,
                 arch,
                 libc: libc.to_string(),
-                outcome: "auto_selected",
-                selected: Some(Candidate::from(&s)),
+                outcome: Outcome::AutoSelected,
+                selected: Some(candidate_of(&s)),
                 checksum,
-                candidates: vec![Candidate::from(&s)],
-            };
-            (verdict, 0)
+                candidates: vec![candidate_of(&s)],
+            }
         }
-        Ok(MatchOutput::NeedsInteraction(scored)) => {
-            let verdict = MatchVerdict {
-                repo: repo.to_string(),
-                tag,
-                arch,
-                libc: libc.to_string(),
-                outcome: "needs_interaction",
-                selected: None,
-                checksum: None,
-                candidates: scored.iter().map(Candidate::from).collect(),
-            };
-            (verdict, 42)
-        }
+        Ok(MatchOutput::NeedsInteraction(scored)) => MatchVerdict {
+            repo: repo.to_string(),
+            tag,
+            arch,
+            libc: libc.to_string(),
+            outcome: Outcome::NeedsInteraction,
+            selected: None,
+            checksum: None,
+            candidates: scored.iter().map(candidate_of).collect(),
+        },
         // A missing/incompatible asset is a normal harness outcome, not a hard error — report it
         // as a verdict. Any other error (there are none today) propagates.
-        Err(e) if e.downcast_ref::<BintoError>().is_some() => {
-            let verdict = MatchVerdict {
-                repo: repo.to_string(),
-                tag,
-                arch,
-                libc: libc.to_string(),
-                outcome: "no_match",
-                selected: None,
-                checksum: None,
-                candidates: vec![],
-            };
-            (verdict, 43)
-        }
+        Err(e) if e.downcast_ref::<BintoError>().is_some() => MatchVerdict {
+            repo: repo.to_string(),
+            tag,
+            arch,
+            libc: libc.to_string(),
+            outcome: Outcome::NoMatch,
+            selected: None,
+            checksum: None,
+            candidates: vec![],
+        },
         Err(e) => return Err(e),
     };
 
@@ -346,7 +303,7 @@ fn cmd_match_asset(
         .and_then(|_| out.flush())
         .context("failed to write verdict to stdout")?;
 
-    std::process::exit(exit_code);
+    std::process::exit(verdict.outcome.exit_code());
 }
 
 fn cmd_list(json: bool, _config: &Config) -> Result<()> {
