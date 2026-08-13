@@ -146,9 +146,8 @@ impl State {
         self.tools.shift_remove(name)
     }
 
-    // TODO: &String is suspicious
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &ToolEntry)> {
-        self.tools.iter()
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &ToolEntry)> {
+        self.tools.iter().map(|(k, v)| (k.as_str(), v))
     }
 }
 

@@ -77,7 +77,7 @@ fn rm_dir(path: &Path) -> Result<()> {
 /// Deletes all binaries in the `state.toml`
 fn remove_bins() -> Result<()> {
     State::mutate(|s| {
-        let names: Vec<String> = s.iter().map(|(n, _)| n.clone()).collect();
+        let names: Vec<String> = s.iter().map(|(n, _)| n.to_owned()).collect();
         for name in &names {
             let entry = remove_tool(s, name)?;
             print_info(&format!("Removed: {}", entry.binary_name));

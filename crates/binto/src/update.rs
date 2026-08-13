@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -52,8 +51,10 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
 
     // Phase A: concurrent API checks. Pinned tools are skipped up front so we don't waste
     // a request — a pin is a lock, so `update --all` deliberately leaves them alone.
-    let snapshot: Vec<(String, ToolEntry)> =
-        state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let snapshot: Vec<(String, ToolEntry)> = state
+        .iter()
+        .map(|(k, v)| (k.to_owned(), v.clone()))
+        .collect();
 
     let mut api_set: JoinSet<(String, ToolEntry, Result<ConditionalResult<Release>>)> =
         JoinSet::new();
@@ -143,35 +144,28 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     // Phase C: concurrent downloads. Each task runs inside its own `download` span, which
     // renders the byte-progress bar (via tracing-indicatif) and tags the task's log events.
     let http = client.http_client().clone();
-    let mut pending_map: HashMap<String, PendingUpdate> = HashMap::new();
-    let mut dl_set: JoinSet<(String, Result<Downloaded>)> = JoinSet::new();
+    // let mut pending_map: HashMap<String, PendingUpdate> = HashMap::new();
+    let mut dl_set: JoinSet<(PendingUpdate, Result<Downloaded>)> = JoinSet::new();
 
     for p in pending {
-        let task_name = p.name.clone();
         let http = http.clone();
-        let asset = p.asset.clone();
-        let all_assets = p.release.assets.clone();
-        let span = download_span(&task_name, asset.size);
+        let span = download_span(&p.name, p.asset.size);
         dl_set.spawn(
             async move {
-                (
-                    task_name,
-                    Downloaded::fetch(&http, &asset, &all_assets).await,
-                )
+                let dl = Downloaded::fetch(&http, &p.asset, &p.release.assets).await;
+                (p, dl)
             }
             .instrument(span),
         );
-        pending_map.insert(p.name.clone(), p);
     }
 
-    let mut downloads: Vec<(String, Downloaded)> = Vec::new();
+    let mut downloads: Vec<(PendingUpdate, Downloaded)> = Vec::new();
     while let Some(res) = dl_set.join_next().await {
-        let (name, dl_result) = res?;
+        let (p, dl_result) = res?;
         match dl_result {
-            Ok(dl) => downloads.push((name, dl)),
+            Ok(dl) => downloads.push((p, dl)),
             Err(e) => {
-                pending_map.remove(&name);
-                print_warning(&format!("Failed to download {name}: {e:#}"));
+                print_warning(&format!("Failed to download {}: {e:#}", p.name));
             }
         }
     }
@@ -182,10 +176,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     }
 
     // Phase D: sequential extract + install (handles interactive binary picker safely)
-    for (name, dl) in downloads {
-        let Some(p) = pending_map.remove(&name) else {
-            continue;
-        };
+    for (p, dl) in downloads {
         // The archive still ships the upstream-named binary; the builder locates it by the
         // repo-derived name, but (re)installs under the tracked name — which may be an `--alias`.
         let spec = InstallSpec::builder(&p.entry.repo, &p.release, &p.asset)
@@ -196,12 +187,12 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
             Ok(ir) => {
                 state.upsert(ir.tool_entry.with_etag(p.new_etag));
                 print_success(&format!(
-                    "{name}: {} → {}",
-                    p.entry.installed_tag, p.release.tag_name
+                    "{}: {} → {}",
+                    p.name, p.entry.installed_tag, p.release.tag_name
                 ));
             }
             Err(e) => {
-                print_warning(&format!("Failed to install {name}: {e:#}"));
+                print_warning(&format!("Failed to install {}: {e:#}", p.name));
             }
         }
     }
@@ -355,8 +346,10 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
         update_available: bool,
     }
 
-    let snapshot: Vec<(String, ToolEntry)> =
-        state.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let snapshot: Vec<(String, ToolEntry)> = state
+        .iter()
+        .map(|(k, v)| (k.to_owned(), v.clone()))
+        .collect();
 
     let mut results: Vec<CheckResult> = Vec::new();
     let mut any_updates = false;

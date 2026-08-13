@@ -237,7 +237,7 @@ fn prune_extras(state: &mut State, manifest: &Manifest, yes: bool) -> Result<()>
     let extras: Vec<(String, PathBuf)> = state
         .iter()
         .filter(|(_, e)| manifest.get(&e.repo).is_none())
-        .map(|(name, e)| (name.clone(), e.install_path.clone()))
+        .map(|(name, e)| (name.to_owned(), e.install_path.clone()))
         .collect();
 
     if extras.is_empty() {
