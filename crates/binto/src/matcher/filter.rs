@@ -88,12 +88,15 @@ pub fn filter_checksums(assets: Vec<Asset>) -> Vec<Asset> {
             let lower = a.name.to_lowercase();
             let checksum_ext = CHECKSUM_EXTENSIONS.iter().find(|ext| lower.ends_with(*ext));
             let is_checksum_name = CHECKSUM_NAMES.iter().any(|name| lower == *name);
+            let contains_checksum_name = lower.contains("checksum");
             if let Some(ext) = checksum_ext {
                 debug!(asset = %a.name, reason = "checksum_extension", term = ext, "filtered out asset");
             } else if is_checksum_name {
                 debug!(asset = %a.name, reason = "checksum_name", "filtered out asset");
+            } else if contains_checksum_name {
+                debug!(asset = %a.name, reason = "contains_checksum_name", "filtered out asset");
             }
-            checksum_ext.is_none() && !is_checksum_name
+            checksum_ext.is_none() && !is_checksum_name && !contains_checksum_name
         })
         .collect()
 }
@@ -144,6 +147,7 @@ mod tests {
             asset("tool_linux_amd64.tar.gz"),
             asset("tool_linux_amd64.tar.gz.sha256"),
             asset("checksums.txt"),
+            asset("tool_checksums.txt"),
             asset("SHA256SUMS"),
         ];
         let filtered = filter_checksums(assets);

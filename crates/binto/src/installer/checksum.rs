@@ -107,7 +107,6 @@ pub fn find_checksum_asset<'a>(target_name: &str, all_assets: &'a [Asset]) -> Op
     generic
 }
 
-// WARN: handle non-generic ones like the ones with versions
 //  gh's checksum file is named gh_2.95.0_checksums.txt, which `is_generic_checksums_file` doesn't match
 /// Recognize a repo-wide checksums file: `checksums.txt`, `SHA256SUMS`, `sha512sum.txt`,
 /// `checksums.sha256`, and similar.
@@ -117,8 +116,10 @@ fn is_generic_checksums_file(name: &str) -> bool {
 
     stem == "checksums"
         || stem == "checksum"
-        || stem.starts_with("checksums.")
-        || stem.starts_with("checksum.")
+        || stem.starts_with("checksums")
+        || stem.starts_with("checksum")
+        || stem.ends_with("checksums")
+        || stem.ends_with("checksum")
         || (stem.starts_with("sha") && (stem.ends_with("sum") || stem.ends_with("sums")))
 }
 
@@ -363,6 +364,7 @@ def456  tool_darwin_arm64.tar.gz\n\
     fn recognizes_generic_checksum_filenames() {
         for name in [
             "checksums.txt",
+            "tool_checksums.txt",
             "checksum",
             "SHA256SUMS",
             "sha512sums.txt",

@@ -187,6 +187,7 @@ pub fn score_asset(asset: &Asset, user_arch_raw: &str, prefer_libc: Libc) -> Ass
     };
     total += format_score;
 
+    // TODO: does this trace total add up correctly?
     debug!(
         asset = %asset.name,
         arch_match = %arch_match,
@@ -207,6 +208,7 @@ pub fn score_asset(asset: &Asset, user_arch_raw: &str, prefer_libc: Libc) -> Ass
 #[derive(Debug)]
 pub struct ScoredAsset {
     pub asset: Asset,
+    // TODO: AssetScore can be flattened
     pub score: AssetScore,
 }
 
