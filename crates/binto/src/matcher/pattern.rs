@@ -26,7 +26,11 @@ pub fn match_pattern<'a>(pattern: &str, asset_names: &[&'a str]) -> Vec<&'a str>
         .filter(|name| pat.matches(name))
         .copied()
         .collect();
-    tracing::debug!(pattern, match_count = matched.len(), "matched stored pattern");
+    tracing::debug!(
+        pattern,
+        match_count = matched.len(),
+        "matched stored pattern"
+    );
     matched
 }
 

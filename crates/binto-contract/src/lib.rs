@@ -99,13 +99,49 @@ pub mod exit_code {
     pub const NO_MATCH: i32 = 43;
 }
 
+/// Where a candidate landed on each preference dimension.
+///
+/// Labels rather than ranks: `jq` over a results file should read as the asset name does.
+/// Field order is the priority order the matcher compares in — architecture first,
+/// packaging last — and two candidates with equal `Tiers` are tied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tiers {
+    /// The canonical architecture the asset names, or `unspecified`.
+    pub arch: String,
+    /// `linux`, or `unspecified` when the asset names no OS.
+    pub os: String,
+    /// `gnu`, `musl`, or `unspecified`.
+    pub libc: String,
+    /// `tar`, `zip`, `raw`, or `appimage`.
+    pub format: String,
+}
+
+/// Something about a candidate the user should know before installing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "note", rename_all = "snake_case")]
+pub enum SelectionNote {
+    /// A preference existed and the release could not satisfy it — gnu was preferred but
+    /// only musl was published. The install still works; it is just not what was asked
+    /// for, which the old integer score had no way to express.
+    Fallback {
+        dimension: String,
+        wanted: String,
+        got: String,
+    },
+    /// The asset names nothing on this dimension, so the matcher trusted the publisher
+    /// rather than verifying a marker.
+    Unspecified { dimension: String },
+}
+
 /// One ranked asset in the verdict.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub name: String,
-    pub score: i32,
-    /// How the asset's architecture matched: `EXACT`, `SYNONYM`, or `NONE`.
-    pub arch_match: String,
+    pub tiers: Tiers,
+    /// Empty when every preference was met and every dimension was stated. Only
+    /// populated for the selected asset and the leader of a tie.
+    #[serde(default)]
+    pub notes: Vec<SelectionNote>,
 }
 
 /// The machine-readable result `binto match` writes to stdout — one JSON object, always
@@ -175,21 +211,23 @@ impl TraceEvent {
 /// The `message` of each decision point, so analysis code matches on a constant instead of
 /// a string literal copied out of the matcher.
 pub mod messages {
-    // matcher
-    pub const FILTERED_OUT_ASSET: &str = "filtered out asset";
+    // matcher — one event per decision, in pipeline order.
+    /// A hard filter disqualified an asset. Carries `reason` and `marker`.
+    pub const ASSET_REJECTED: &str = "asset rejected";
+    /// Summary of the hard-filter pass. Carries `before`, `after`, `rejected`.
     pub const APPLIED_HARD_FILTERS: &str = "applied hard filters";
-    pub const SCORED_ASSET: &str = "scored asset";
-    pub const ASSET_EXCLUDED: &str = "asset excluded from ranking";
-    pub const RANKED_ASSET: &str = "ranked asset";
-    pub const AUTO_SELECTED_ASSET: &str = "auto-selected asset";
-    pub const NEEDS_INTERACTION: &str = "confidence gap below threshold, needs interaction";
-    pub const NO_CANDIDATES_AFTER_FILTERS: &str = "no candidates left after hard filters";
-    pub const NO_CANDIDATES_AFTER_SCORING: &str = "no candidates left after scoring";
+    /// A surviving asset placed on the preference tiers. Carries the four tier labels
+    /// and their ranks.
+    pub const ASSET_RANKED: &str = "asset ranked";
+    /// The outcome. Carries `outcome`, `asset`, `tied`, the tier labels, and `notes`.
+    pub const SELECTION: &str = "selection";
 
     // stored-pattern fast path
     pub const PATTERN_SELECTED: &str = "pattern fast-path selected asset";
     pub const PATTERN_INCONCLUSIVE: &str =
-        "pattern fast-path inconclusive, falling back to scoring";
+        "pattern fast-path inconclusive, falling back to ranking";
+    pub const PATTERN_UNUSABLE: &str =
+        "pattern fast-path hit an asset that fails the hard filters, falling back to ranking";
     pub const PATTERN_INVALID_GLOB: &str = "stored pattern is not a valid glob";
     pub const PATTERN_MATCHED: &str = "matched stored pattern";
 
@@ -256,13 +294,46 @@ mod tests {
     #[test]
     fn trace_event_keeps_unmodelled_fields() {
         let ev: TraceEvent = serde_json::from_str(
-            r#"{"timestamp":"t","level":"DEBUG","message":"scored asset","target":"binto::matcher::score",
-                "asset":"x.tar.gz","total":1900,"span":{"name":"match_asset"}}"#,
+            r#"{"timestamp":"t","level":"DEBUG","message":"asset ranked","target":"binto::matcher::rank",
+                "asset":"x.tar.gz","libc":"gnu","libc_tier":0,"span":{"name":"match_asset"}}"#,
         )
         .unwrap();
-        assert_eq!(ev.message, messages::SCORED_ASSET);
+        assert_eq!(ev.message, messages::ASSET_RANKED);
         assert_eq!(ev.field_str("asset"), Some("x.tar.gz"));
-        assert_eq!(ev.field_i64("total"), Some(1900));
+        assert_eq!(ev.field_str("libc"), Some("gnu"));
+        assert_eq!(ev.field_i64("libc_tier"), Some(0));
         assert!(ev.field("span").is_some());
+    }
+
+    #[test]
+    fn a_candidate_round_trips_with_its_notes() {
+        let json = r#"{
+            "name": "rg-x86_64-linux-musl.tar.gz",
+            "tiers": {"arch":"x86_64","os":"linux","libc":"musl","format":"tar"},
+            "notes": [{"note":"fallback","dimension":"libc","wanted":"gnu","got":"musl"}]
+        }"#;
+        let c: Candidate = serde_json::from_str(json).unwrap();
+        assert_eq!(c.tiers.libc, "musl");
+        assert_eq!(
+            c.notes,
+            vec![SelectionNote::Fallback {
+                dimension: "libc".into(),
+                wanted: "gnu".into(),
+                got: "musl".into(),
+            }]
+        );
+        let back: Candidate = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.notes, c.notes);
+    }
+
+    /// A candidate with nothing to report omits `notes` entirely rather than carrying an
+    /// empty field the reader has to interpret.
+    #[test]
+    fn notes_default_to_empty() {
+        let c: Candidate = serde_json::from_str(
+            r#"{"name":"t","tiers":{"arch":"x86_64","os":"linux","libc":"gnu","format":"tar"}}"#,
+        )
+        .unwrap();
+        assert!(c.notes.is_empty());
     }
 }

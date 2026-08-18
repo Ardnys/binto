@@ -7,7 +7,7 @@ use crate::github::GithubClient;
 use crate::github::types::Release;
 use crate::installer::{InstallResult, InstallSpec, default_binary_name};
 use crate::manifest::Manifest;
-use crate::matcher::score::detect_arch;
+use crate::matcher::facts::detect_arch;
 use crate::output::{print_info, print_success, print_warning};
 use crate::picker;
 use crate::state::State;
@@ -132,6 +132,8 @@ pub async fn cmd_install(
     let install_name = alias
         .as_deref()
         .unwrap_or_else(|| default_binary_name(repo));
+    // TODO: we might have to allow installing different binaries of the same repository
+    // so we have to check both repo and binary name
     let already_managed = state
         .get(install_name)
         .is_some_and(|existing| existing.repo == repo);

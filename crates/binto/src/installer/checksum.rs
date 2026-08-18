@@ -61,9 +61,10 @@ fn digest_algo(s: &str) -> Option<ChecksumAlgo> {
 /// still read from the digest length, so this list only needs to recognize that the file is a
 /// checksum, not which kind.
 const SIDECAR_EXTS: &[&str] = &[
-    "sha256", "sha512", "sha384", "sha224", "sha2", "sha", "digest", "checksum",
+    "sha256", "sha512", "sha384", "sha224", "sha2", "sha", "digest", "checksum", "sum",
 ];
 // TODO: there's also sigstore.json
+//
 
 /// Find the checksum asset that covers `target_name` in the full asset list.
 ///

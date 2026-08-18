@@ -72,38 +72,97 @@ One JSON object per repo:
   "exit_code": 0,
   "duration_ms": 5,
   "verdict": { "outcome": "auto_selected", "selected": {...}, "checksum": "...", "candidates": [...] },
-  "trace": [ { "message": "scored asset", "asset": "...", "total": 1900, ... }, ... ],
+  "trace": [ { "message": "asset ranked", "asset": "...", "libc": "gnu", ... }, ... ],
   "error": "only present when outcome is \"error\""
 }
 ```
 
 - `verdict` is binto's stdout verdict (`binto_contract::MatchVerdict`).
-- `trace` is every stderr decision event (`binto_contract::TraceEvent`): scoring
-  components, filter rejections, the confidence-gap decision, checksum discovery.
-  A line that isn't binto's JSON log is kept as `{"raw": "..."}` so nothing is lost.
+- `trace` is every stderr decision event (`binto_contract::TraceEvent`): filter
+  rejections, tier placements, the selection, checksum discovery. A line that isn't
+  binto's JSON log is kept as `{"raw": "..."}` so nothing is lost.
   `binto_contract::messages` has a constant per decision point.
+
+### Candidates, tiers, and notes
+
+The matcher has no score. Each candidate carries the **tier** it landed on per dimension,
+and candidates are ordered best-first; two candidates with equal `tiers` are **tied**, and
+a tie is what produces `needs_interaction`.
+
+```json
+{
+  "name": "ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz",
+  "tiers": { "arch": "x86_64", "os": "linux", "libc": "musl", "format": "tar" },
+  "notes": [ { "note": "fallback", "dimension": "libc", "wanted": "gnu", "got": "musl" } ]
+}
+```
+
+`notes` is the signal a score could never carry: `fallback` means a preference existed and
+the release could not satisfy it, `unspecified` means the asset states nothing on that
+dimension. Only the selected asset (and the leader of a tie) carries notes.
+
+The four trace messages, in pipeline order: `asset rejected` (with `reason` and `marker`),
+`applied hard filters`, `asset ranked`, `selection` (with `outcome`, `tied`, and `notes`).
 
 ### Digging into a result
 
 ```sh
-# why did repo X not auto-select?
-jq -c 'select(.repo=="hatoo/oha") | .trace[] | {message, asset, total, gap}' results-x86_64-gnu.jsonl
+# why did repo X not auto-select? — the tie group is the leading run of equal tiers
+jq -c 'select(.repo=="hatoo/oha") | .verdict.candidates[] | {name, tiers}' results-x86_64-gnu.jsonl
+
+# what got thrown out, and why
+jq -r 'select(.repo=="hatoo/oha") | .trace[] | select(.message=="asset rejected")
+       | "\(.reason)\t\(.marker)\t\(.asset)"' results-x86_64-gnu.jsonl
 
 # outcome counts
 jq -r .outcome results-x86_64-gnu.jsonl | sort | uniq -c
+
+# repos installing a libc they did not ask for
+jq -r 'select(.verdict.selected.notes[]?.note=="fallback") | .repo' results-x86_64-gnu.jsonl
+
+# repos where the winner states nothing at all — binto is trusting the publisher
+jq -r 'select([.verdict.selected.notes[]?.dimension] | contains(["arch"])) | .repo' \
+   results-x86_64-gnu.jsonl
+
+# what the hard filters removed across the whole dataset
+jq -r '.trace[]? | select(.message=="asset rejected") | .reason' results-x86_64-gnu.jsonl \
+  | sort | uniq -c | sort -rn
 
 # auto-selected repos where no checksum file was found
 jq -r 'select(.outcome=="auto_selected" and .verdict.checksum==null) | .repo' results-x86_64-gnu.jsonl
 ```
 
-## Baseline (cli.jsonl, 456 repos, x86_64/gnu, binto 0.2.0)
+Comparing two runs needs a join, not `jq -s` — slurping two JSONL files yields one flat
+array of records, not one array per file:
 
-| outcome | count | share |
-| --- | --- | --- |
-| auto_selected | 395 | 86.6% |
-| needs_interaction | 51 | 11.2% |
-| no_match | 10 | 2.2% |
-| error | 0 | — |
+```sh
+cmp() {   # cmp before.jsonl after.jsonl
+  paste <(jq -r '"\(.repo)|\(.outcome)|\(.verdict.selected.name // "-")"' "$1" | sort) \
+        <(jq -r '"\(.repo)|\(.outcome)|\(.verdict.selected.name // "-")"' "$2" | sort) \
+  | awk -F'\t' '{split($1,a,"|"); split($2,b,"|");
+      if (a[2]!=b[2])                  printf "%-28s %s -> %s\n", a[1], a[2], b[2];
+      else if (a[3]!=b[3])             printf "%-28s PICK %s -> %s\n", a[1], a[3], b[3] }'
+}
+```
 
-Also notable: 244 of the 395 auto-selected repos had **no checksum file
-discovered** — checksum discovery is the biggest remaining improvement surface.
+## Baseline (cli.jsonl, 456 repos, binto 0.2.0, tier matcher)
+
+| outcome | x86_64/gnu | x86_64/musl | aarch64/gnu |
+| --- | --- | --- | --- |
+| auto_selected | 420 (92.1%) | 421 (92.3%) | 370 (81.1%) |
+| needs_interaction | 23 (5.0%) | 22 (4.8%) | 15 (3.3%) |
+| no_match | 13 (2.9%) | 13 (2.9%) | 71 (15.6%) |
+| error | 0 | 0 | 0 |
+
+The previous score-based matcher scored 395/51/10 on x86_64/gnu. The `no_match` count rose
+because assets that could never have installed — bare `.gz`/`.bz2`/`.tar.zst` the extractor
+cannot open, and `.json`/`.txt` files that used to rank as extensionless binaries — are now
+rejected instead of confidently selected. Three repos previously auto-selected
+`dist-manifest.json`, `latest.json`, and `sha1sum.txt` **as the binary**.
+
+Remaining improvement surfaces, x86_64/gnu:
+
+- **194 of 420** auto-selected repos had no checksum file discovered.
+- **34** auto-select a musl build because no gnu build is published (`notes[].note ==
+  "fallback"`) — visible now rather than indistinguishable from a real match.
+- **28** auto-select an asset that names no architecture at all.

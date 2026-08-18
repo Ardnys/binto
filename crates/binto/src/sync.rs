@@ -11,7 +11,7 @@ use crate::github::types::{Asset, Release};
 use crate::installer::download::download_span;
 use crate::installer::{Downloaded, InstallSpec, default_binary_name};
 use crate::manifest::{Manifest, ManifestEntry};
-use crate::matcher::score::detect_arch;
+use crate::matcher::facts::detect_arch;
 use crate::output::{print_info, print_status, print_success, print_warning};
 use crate::picker;
 use crate::state::State;

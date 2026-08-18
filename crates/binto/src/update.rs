@@ -47,7 +47,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     let manifest = Manifest::load()?;
     let token = GithubClient::resolve_token(config.github_token.clone());
     let client = Arc::new(GithubClient::new(token)?);
-    let user_arch = crate::matcher::score::detect_arch();
+    let user_arch = crate::matcher::facts::detect_arch();
 
     // Phase A: concurrent API checks. Pinned tools are skipped up front so we don't waste
     // a request — a pin is a lock, so `update --all` deliberately leaves them alone.
@@ -286,7 +286,7 @@ pub async fn cmd_update(
                 entry.installed_tag, release.tag_name
             ));
 
-            let user_arch = crate::matcher::score::detect_arch();
+            let user_arch = crate::matcher::facts::detect_arch();
             let asset = select_asset(
                 &release,
                 &user_arch,

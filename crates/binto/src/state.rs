@@ -17,7 +17,6 @@ pub struct State {
 pub struct ToolEntry {
     pub repo: String,
     pub installed_tag: String,
-    // TODO: does this really have to be a PathBuf? Why not Path? It's not mutated
     pub install_path: PathBuf,
     pub binary_name: String,
     pub asset_pattern: String,

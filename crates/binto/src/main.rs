@@ -26,7 +26,7 @@ use anyhow::{Context, Result};
 use binto_contract::{Candidate, MatchInput, MatchVerdict, Outcome};
 use clap::Parser;
 use console::style;
-use matcher::score::ScoredAsset;
+use matcher::rank::{RankedAsset, SelectionNote};
 use matcher::{MatchOutput, match_asset};
 
 use cli::{Cli, Commands};
@@ -37,7 +37,7 @@ use installer::checksum::find_checksum_asset;
 use output::{print_error, print_info, print_status, print_success, print_warning};
 use state::{State, ToolEntry};
 
-use crate::{manifest::Manifest, matcher::score::detect_arch};
+use crate::{manifest::Manifest, matcher::facts::detect_arch};
 
 /// Return the first path on $PATH where `name` exists as a file, if any.
 fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
@@ -201,13 +201,36 @@ fn maybe_print_stale_banner(config: &Config) {
     }
 }
 
-/// Build a verdict [`Candidate`] from a scored asset. The type itself lives in
+/// Build a verdict [`Candidate`] from a ranked asset. The type itself lives in
 /// `binto-contract` because the harness deserializes it.
-fn candidate_of(s: &ScoredAsset) -> Candidate {
+fn candidate_of(r: &RankedAsset, notes: &[SelectionNote]) -> Candidate {
+    let [(_, arch), (_, os), (_, libc), (_, format)] = r.labels();
     Candidate {
-        name: s.asset.name.clone(),
-        score: s.score.total,
-        arch_match: s.score.arch_match.to_string(),
+        name: r.name().to_string(),
+        tiers: binto_contract::Tiers {
+            arch: arch.to_string(),
+            os: os.to_string(),
+            libc: libc.to_string(),
+            format: format.to_string(),
+        },
+        notes: notes.iter().map(note_of).collect(),
+    }
+}
+
+fn note_of(note: &SelectionNote) -> binto_contract::SelectionNote {
+    match note {
+        SelectionNote::Fallback {
+            dimension,
+            wanted,
+            got,
+        } => binto_contract::SelectionNote::Fallback {
+            dimension: dimension.to_string(),
+            wanted: wanted.to_string(),
+            got: got.to_string(),
+        },
+        SelectionNote::Unspecified { dimension } => binto_contract::SelectionNote::Unspecified {
+            dimension: dimension.to_string(),
+        },
     }
 }
 
@@ -259,19 +282,22 @@ fn cmd_match_asset(
 
     let verdict = match result {
         Ok(MatchOutput::AutoSelected(s)) => {
-            let checksum = find_checksum_asset(&s.asset.name, &assets).map(|a| a.name.clone());
+            let checksum = find_checksum_asset(&s.asset().name, &assets).map(|a| a.name.clone());
+            let candidate = candidate_of(&s.ranked, &s.notes);
             MatchVerdict {
                 repo: repo.to_string(),
                 tag,
                 arch,
                 libc: libc.to_string(),
                 outcome: Outcome::AutoSelected,
-                selected: Some(candidate_of(&s)),
+                selected: Some(candidate.clone()),
                 checksum,
-                candidates: vec![candidate_of(&s)],
+                candidates: vec![candidate],
             }
         }
-        Ok(MatchOutput::NeedsInteraction(scored)) => MatchVerdict {
+        // Only the leader carries notes: they describe what the whole tie group has in
+        // common, which is usually why it tied.
+        Ok(MatchOutput::NeedsInteraction { ranked, notes }) => MatchVerdict {
             repo: repo.to_string(),
             tag,
             arch,
@@ -279,7 +305,14 @@ fn cmd_match_asset(
             outcome: Outcome::NeedsInteraction,
             selected: None,
             checksum: None,
-            candidates: scored.iter().map(candidate_of).collect(),
+            candidates: ranked
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let notes = if i == 0 { notes.as_slice() } else { &[] };
+                    candidate_of(r, notes)
+                })
+                .collect(),
         },
         // A missing/incompatible asset is a normal harness outcome, not a hard error — report it
         // as a verdict. Any other error (there are none today) propagates.
