@@ -54,8 +54,8 @@ fn first_suffix<T: Copy>(name: &str, table: &[(&'static str, T)]) -> Option<T> {
 // -- architecture --------------------------------------------------------
 
 // TODO: some repos have both x86_64 and amd64 in assets?
-// TODO: some assets are labelled 64-bit, 32-bit
 // TODO: there's also "baseline" builds. Default to "baseline" if stuck between these choices. Additional info:
+// TODO: there's "default" or "dev" builds as well
 // openscience-linux-x64-baseline.tar.gz VS openscience-linux-x64.tar.gz
 // Apparently it's about microarchitectures in modern CPUs. Too specific to work on it for now.
 //
@@ -64,6 +64,8 @@ fn first_suffix<T: Copy>(name: &str, table: &[(&'static str, T)]) -> Option<T> {
 /// Architectures we never run on are listed too, not out of completeness but because an
 /// unlisted one parses as "no architecture stated" and stays a candidate — an `arm5`
 /// build would otherwise be offered on an aarch64 host.
+///
+/// Word-size markers are deliberately absent; they live in [`BITNESS_TERMS`].
 const ARCH_SYNONYMS: &[(&str, &[&str])] = &[
     ("x86_64", &["x86_64", "amd64", "x64", "amd_64"]),
     ("aarch64", &["aarch64", "arm64"]),
@@ -71,7 +73,7 @@ const ARCH_SYNONYMS: &[(&str, &[&str])] = &[
     ("armv6", &["armv6", "armv6l", "arm6"]),
     ("armv5", &["armv5", "armv5l", "arm5"]),
     ("i686", &["i686", "i386", "x86", "386"]),
-    ("riscv64", &["riscv64"]),
+    ("riscv64", &["riscv64", "riscv64gc"]),
     ("ppc64le", &["ppc64le", "powerpc64le"]),
     ("ppc64", &["ppc64", "powerpc64"]),
     ("s390x", &["s390x"]),
@@ -80,6 +82,28 @@ const ARCH_SYNONYMS: &[(&str, &[&str])] = &[
     ("mips64", &["mips64"]),
     ("mipsle", &["mipsle", "mipsel"]),
     ("mips", &["mips"]),
+];
+
+/// Word size, which is not an architecture: `64bit` says how wide the machine is, not
+/// which machine it is. Kept out of [`ARCH_SYNONYMS`] because it maps to no single
+/// canonical name — every 64-bit architecture answers to it.
+///
+/// Consulted only once [`ARCH_TERMS`] has found nothing, which is the whole rule:
+/// `..._arm64_64bit.tar.gz` states both facts and the machine is the more specific one, so
+/// it wins by never being asked to compete. Ordering inside the name is irrelevant, unlike
+/// a single flattened table where `64bit` and `arm64` are the same length and declaration
+/// order silently decides.
+///
+/// A lone `64bit` is read as `x86_64`: a publisher labelling by word size alone is
+/// shipping for the desktop, and an aarch64 build that cared would have said so.
+///
+/// Longest term first, as [`find_token`] requires.
+const BITNESS_TERMS: &[(&str, &str)] = &[
+    ("64-bit", "x86_64"),
+    ("32-bit", "32bit"),
+    ("64bit", "x86_64"),
+    ("32bit", "32bit"),
+    ("32", "32bit"),
 ];
 
 /// Every synonym flattened to `(term, canonical)`, longest term first so `x86_64` is
@@ -117,6 +141,13 @@ pub fn canonical_arch(raw: &str) -> &'static str {
         .iter()
         .find(|(_, synonyms)| synonyms.contains(&raw.as_str()))
         .map(|(canonical, _)| *canonical)
+        // `uname` never says `64bit`, but a hand-written `--arch` might.
+        .or_else(|| {
+            BITNESS_TERMS
+                .iter()
+                .find(|(term, _)| *term == raw)
+                .map(|(_, canonical)| *canonical)
+        })
         .unwrap_or("x86_64")
 }
 
@@ -182,6 +213,7 @@ const LIBC_TERMS: &[(&str, LibcFact)] = &[
     ("musleabi", LibcFact::Musl),
     ("musleabihf", LibcFact::Musl),
     // A statically linked build has no libc dependency, which is what musl buys you.
+    // TODO: "standalone" or "stand_alone" could also mean musl
     ("static", LibcFact::Musl),
 ];
 
@@ -209,6 +241,7 @@ impl LibcFact {
 
 // TODO what shall we do with completions and man pages
 // TODO: sometimes the exact same package has different archive extensions. In that scenario we can pick anything
+// TODO: there's .gz, .tar.zst
 /// Archive shapes `installer::extract::extract_archive` can actually open.
 ///
 /// This table and that function must agree: an entry here that the extractor does not
@@ -237,6 +270,7 @@ const NOT_A_BINARY_EXTENSIONS: &[(&str, &str)] = &[
     (".flatpak", "flatpak"),
     (".wasm", "wasm"),
     (".json", "json"),
+    (".jsonl", "jsonl"),
     (".yaml", "yaml"),
     (".yml", "yml"),
     (".toml", "toml"),
@@ -248,9 +282,14 @@ const NOT_A_BINARY_EXTENSIONS: &[(&str, &str)] = &[
     (".svg", "svg"),
     (".so", "so"),
     (".sqlite", "sqlite"),
-    // (".1", "1"), what is this
+    (".pdb", "pdb"),           // debug-symbol database
+    (".d", "d"),               // debug symbols
+    (".rb", "ruby"),           // some peeps put ruby scripts in releases
+    (".asar", "asar"),         // electron app archive
+    (".blockmap", "blockmap"), // electron related something
 ];
 
+// TODO: when an archive is implemented, remove them from this list
 /// Compressed shapes the extractor does *not* understand. Without this list they fall
 /// through to "raw binary", get copied verbatim, and are installed as an executable that
 /// is really a compressed blob.
@@ -301,6 +340,8 @@ const CHECKSUM_EXTENSIONS: &[&str] = &[
     ".minisig",
     ".b64",
     ".sigstore.json",
+    ".sum",
+    ".pub",
 ];
 
 /// Digest names that appear as a whole-file manifest: `SHA256SUMS`, `md5sums.txt`.
@@ -361,12 +402,18 @@ pub fn parse(name: &str) -> AssetFacts {
 
     AssetFacts {
         os: parse_os(&name),
-        arch: find_token(&name, &ARCH_TERMS)
-            .map(ArchFact::Named)
-            .unwrap_or(ArchFact::Unspecified),
+        arch: parse_arch(&name),
         libc: find_token(&name, &LIBC_SORTED).unwrap_or(LibcFact::Unspecified),
         kind: parse_kind(&name),
     }
+}
+
+/// A named architecture if the asset states one, else whatever its word size implies.
+fn parse_arch(name: &str) -> ArchFact {
+    find_token(name, &ARCH_TERMS)
+        .or_else(|| find_token(name, BITNESS_TERMS))
+        .map(ArchFact::Named)
+        .unwrap_or(ArchFact::Unspecified)
 }
 
 fn parse_os(name: &str) -> OsFact {
@@ -386,7 +433,7 @@ fn parse_os(name: &str) -> OsFact {
 }
 
 fn parse_kind(name: &str) -> AssetKind {
-    if name.contains("source code") || name.contains("source_code") {
+    if name.contains("source code") || name.contains("source_code") || name.contains("source") {
         return AssetKind::SourceArchive;
     }
     if let Some(ext) = CHECKSUM_EXTENSIONS.iter().find(|ext| name.ends_with(*ext)) {
@@ -451,6 +498,12 @@ mod tests {
             ("gh_2.45.0_linux_386.tar.gz", "i686"),
             ("tool-riscv64-linux.tar.gz", "riscv64"),
             ("tool-powerpc64le-linux.tar.gz", "ppc64le"),
+            ("arduino-cli_1.5.1_Linux_32bit.tar.gz", "32bit"),
+            ("arduino-cli_1.5.1_Linux_64bit.tar.gz", "x86_64"),
+            ("ascii-image-converter_Linux_arm64_64bit.tar.gz", "aarch64"),
+            // The named architecture wins wherever the word size sits relative to it.
+            ("tool_linux_64bit_armv7.tar.gz", "armv7"),
+            ("tool_Linux_64-bit_ppc64le.tar.gz", "ppc64le"),
         ] {
             assert_eq!(parse(name).arch, ArchFact::Named(expected), "{name}");
         }
@@ -551,6 +604,7 @@ mod tests {
             ("autorestic_1.8.3_linux_mipsle.bz2", "mipsle"),
             ("autorestic_1.8.3_linux_mips.bz2", "mips"),
             ("tool-linux-ppc64", "ppc64"),
+            ("arduino-cli_1.5.1_Linux_32bit.tar.gz", "32bit"),
         ] {
             assert_eq!(parse(name).arch, ArchFact::Named(expected), "{name}");
         }

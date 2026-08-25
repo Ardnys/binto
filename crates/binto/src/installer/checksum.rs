@@ -367,6 +367,7 @@ def456  tool_darwin_arm64.tar.gz\n\
             "checksums.txt",
             "tool_checksums.txt",
             "checksum",
+            "0.1.1-checksums.txt",
             "SHA256SUMS",
             "sha512sums.txt",
             "sha256sum",
