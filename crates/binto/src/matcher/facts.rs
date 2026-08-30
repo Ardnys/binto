@@ -408,6 +408,21 @@ pub fn parse(name: &str) -> AssetFacts {
     }
 }
 
+#[allow(dead_code)]
+pub fn remove_facts(name: &str) -> &str {
+    let name = name.to_lowercase();
+
+    fn ft<T: Copy>(n: &str, table: &[(&'static str, T)]) -> Option<&'static str> {
+        table
+            .iter()
+            .find(|(term, _)| has_token(n, term))
+            .map(|(t, _)| *t)
+    }
+    let arch_token = ft(&name, &ARCH_TERMS).expect("Could not find arch token");
+    println!("Arch token: {arch_token}");
+    arch_token
+}
+
 /// A named architecture if the asset states one, else whatever its word size implies.
 fn parse_arch(name: &str) -> ArchFact {
     find_token(name, &ARCH_TERMS)
@@ -674,5 +689,27 @@ mod tests {
         assert_eq!(canonical_arch(" arm64 "), "aarch64");
         // Unknown machine names fall back rather than failing the install outright.
         assert_eq!(canonical_arch("sparc"), "x86_64");
+    }
+
+    #[test]
+    fn remove_facts_from_asset_name() {
+        for (name, expected) in [
+            ("tool_linux_amd64.tar.gz", "tool"),
+            ("tool-cli_linux_amd64.tar.gz", "tool-cli"),
+            ("tool-x86_64-unknown-linux-gnu.tar.gz", "tool"),
+            (
+                "tool-server-x86_64-unknown-linux-musl.tar.xz",
+                "tool-server",
+            ),
+            ("gh_2.45.0_linux_386.tar.gz", "gh"),
+            ("arduino-cli_1.5.1_Linux_64bit.tar.gz", "arduino-cli"),
+            (
+                "ascii-image-converter_Linux_arm64_64bit.tar.gz",
+                "ascii-image-converter",
+            ),
+        ] {
+            assert_eq!(remove_facts(name), expected);
+        }
+        assert_eq!(parse("tool-linux.tar.gz").arch, ArchFact::Unspecified);
     }
 }

@@ -62,6 +62,11 @@ pub fn default_binary_name(repo: &str) -> &str {
     repo.split('/').next_back().unwrap_or(repo)
 }
 
+#[allow(dead_code)]
+pub fn remove_fact_names(_asset: &str) -> &str {
+    todo!()
+}
+
 pub struct Downloaded {
     pub asset_path: PathBuf,
     pub sha256: Option<String>,

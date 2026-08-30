@@ -128,6 +128,7 @@ pub async fn cmd_install(
 
     // Look for an already-managed tool under its install name (the `--alias`, or the
     // repo-derived default) before doing any network I/O.
+    // TODO: unless it's a multi-binary project, then we have to match by asset name
     let state = State::load()?;
     let install_name = alias
         .as_deref()
