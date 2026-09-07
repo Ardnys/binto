@@ -3,9 +3,10 @@ use anyhow::Result;
 
 use crate::config::Libc;
 use crate::github::types::{Asset, Release};
+use crate::installer::default_binary_name;
 use crate::matcher::rank::SelectionNote;
-use crate::matcher::{MatchOutput, match_asset};
-use crate::output::print_info;
+use crate::matcher::{MatchOutput, distinct_stems, match_asset};
+use crate::output::{print_info, print_warning};
 
 // TODO: this could be an impl SelectionNote
 /// One line explaining what the release could not give you, for the notes the matcher
@@ -23,6 +24,14 @@ fn describe(note: &SelectionNote) -> String {
     }
 }
 
+/// One asset, chosen, plus which of the repo's binaries it turned out to be.
+pub struct SelectedAsset {
+    pub asset: Asset,
+    /// The stem to install under, set only when the release ships several distinct
+    /// binaries. `None` means the repo-derived name is correct — see [`Selection::variant`].
+    pub variant: Option<String>,
+}
+
 /// Resolve a release to a single concrete asset for the current arch.
 ///
 /// Auto-selects when the matcher is confident; otherwise falls back to an interactive
@@ -37,7 +46,7 @@ pub fn select_asset(
     prompt: &str,
     prefer_libc: Libc,
     assume_yes: bool,
-) -> Result<Asset> {
+) -> Result<SelectedAsset> {
     let match_output = match_asset(
         release.assets.clone(),
         user_arch,
@@ -47,7 +56,7 @@ pub fn select_asset(
         prefer_libc,
     )?;
 
-    let asset = match match_output {
+    let selected = match match_output {
         MatchOutput::AutoSelected(s) => {
             print_info(&format!("Auto-selected asset: {}", s.asset().name));
             // Say so when the release could not satisfy a preference, instead of letting
@@ -55,16 +64,31 @@ pub fn select_asset(
             for note in &s.notes {
                 print_info(&format!("  ↳ {}", describe(note)));
             }
-            s.ranked.candidate.asset
+            SelectedAsset {
+                variant: s.variant,
+                asset: s.ranked.candidate.asset,
+            }
         }
         MatchOutput::NeedsInteraction {
             ranked: mut candidates,
             ..
         } => {
-            if assume_yes {
-                // Non-interactive: take the first of the tied candidates.
-                let top = candidates.swap_remove(0).candidate.asset;
-                print_info(&format!("Auto-selected asset (--yes): {}", top.name));
+            // Whether the release ships several binaries is a property of the release, so
+            // it is settled before the user narrows it down to one.
+            let ships_variants = distinct_stems(&candidates) > 1;
+
+            let primary = default_binary_name(repo);
+
+            let chosen = if assume_yes {
+                // Nobody to ask, and tied candidates are in whatever order the release
+                // listed them. Prefer the binary named after the repo, which is as close to
+                // a "primary" as a release gets.
+                let idx = candidates
+                    .iter()
+                    .position(|c| c.stem() == primary)
+                    .unwrap_or(0);
+                let top = candidates.swap_remove(idx);
+                print_info(&format!("Auto-selected asset (--yes): {}", top.name()));
                 top
             } else {
                 let names: Vec<String> = candidates.iter().map(|c| c.name().to_string()).collect();
@@ -73,12 +97,32 @@ pub fn select_asset(
                     .items(&names)
                     .default(0)
                     .interact()?;
-                candidates.into_iter().nth(idx).unwrap().candidate.asset
+                candidates.into_iter().nth(idx).unwrap()
+            };
+
+            // Naming by stem is only safe when a person saw which asset they picked. Under
+            // `--yes` an arbitrary tied asset would otherwise name the tool after itself —
+            // installing `oatmeal` as `debug`.
+            let named_by_stem = ships_variants
+                && !chosen.stem().is_empty()
+                && (!assume_yes || chosen.stem() == primary);
+
+            if assume_yes && ships_variants && chosen.stem() != primary {
+                print_warning(&format!(
+                    "{repo} ships several binaries and --yes cannot ask which one you want. \
+                     Installing {} as '{primary}'.",
+                    chosen.name()
+                ));
+            }
+
+            SelectedAsset {
+                variant: named_by_stem.then(|| chosen.stem().to_string()),
+                asset: chosen.candidate.asset,
             }
         }
     };
 
-    Ok(asset)
+    Ok(selected)
 }
 
 #[cfg(test)]

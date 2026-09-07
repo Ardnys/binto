@@ -11,6 +11,7 @@ use tracing::Instrument;
 
 use crate::error::BintoError;
 use crate::github::types::{Asset, Release};
+use crate::matcher::facts::AssetName;
 use crate::matcher::pattern::asset_to_pattern;
 use crate::output::print_info;
 use crate::state::ToolEntry;
@@ -130,6 +131,7 @@ pub struct InstallSpecBuilder<'a> {
     asset: &'a Asset,
     install_dir: Option<&'a Path>,
     install_name: Option<String>,
+    variant: Option<String>,
 }
 
 impl<'a> InstallSpec<'a> {
@@ -144,6 +146,7 @@ impl<'a> InstallSpec<'a> {
             asset,
             install_dir: None,
             install_name: None,
+            variant: None,
         }
     }
 }
@@ -160,10 +163,24 @@ impl<'a> InstallSpecBuilder<'a> {
         self
     }
 
+    /// Which of the repo's binaries this is, when the release ships more than one.
+    ///
+    /// A repo publishing `tool-cli` beside `tool-server` names neither of them after the
+    /// repo, so both the archive lookup and the installed filename come from the stem —
+    /// otherwise the two would land on the same name and the second would overwrite the
+    /// first. An explicit [`install_name`](Self::install_name) still wins over it.
+    pub fn variant(mut self, stem: impl Into<String>) -> Self {
+        self.variant = Some(stem.into());
+        self
+    }
+
     /// Resolve the name split and finalize the spec. Panics if `install_dir` was never set.
     pub fn build(self) -> InstallSpec<'a> {
-        let find_name = default_binary_name(self.repo);
-        let install_name = self.install_name.unwrap_or_else(|| find_name.to_string());
+        let find_name = self
+            .variant
+            .clone()
+            .unwrap_or_else(|| default_binary_name(self.repo).to_string());
+        let install_name = self.install_name.unwrap_or_else(|| find_name.clone());
         InstallSpec {
             repo: self.repo,
             release: self.release,
@@ -171,7 +188,7 @@ impl<'a> InstallSpecBuilder<'a> {
             install_dir: self
                 .install_dir
                 .expect("InstallSpecBuilder::install_dir must be set before build"),
-            find_name: find_name.to_string(),
+            find_name,
             install_name,
         }
     }
@@ -241,12 +258,16 @@ impl InstallSpec<'_> {
             binary::atomic_install(&binary_src, self.install_dir, &self.install_name)?;
 
         let asset_pattern = asset_to_pattern(&self.asset.name, &self.release.tag_name);
+        // Recorded, not yet used for naming: which binary of the repo this is, so a repo
+        // shipping several can tell its entries apart even when one carries an `--alias`.
+        let stem = AssetName::new(&self.asset.name).stem(Some(&self.release.tag_name));
 
         let tool_entry = ToolEntry {
             repo: self.repo.to_string(),
             installed_tag: self.release.tag_name.clone(),
             install_path: installed_path.clone(),
             binary_name: self.install_name.clone(),
+            stem,
             asset_pattern,
             installed_sha256: dl.sha256.clone(),
             etag: None,

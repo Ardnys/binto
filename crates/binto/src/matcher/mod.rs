@@ -3,6 +3,8 @@ pub mod filter;
 pub mod pattern;
 pub mod rank;
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 use tracing::debug;
 
@@ -18,6 +20,14 @@ pub struct Selection {
     pub ranked: RankedAsset,
     /// Preferences the release could not satisfy, and dimensions it left unstated.
     pub notes: Vec<SelectionNote>,
+    /// The chosen asset's stem, but only when the release ships more than one distinct
+    /// binary — `Some("tool-server")` for a repo publishing `tool-cli` beside it.
+    ///
+    /// `None` for the overwhelming majority of releases, where every candidate reduces to
+    /// the same stem. The repo-derived name is already right there, and naming by stem
+    /// would rename tools for no gain — `GitoxideLabs/gitoxide` would become
+    /// `gitoxide-max-pure`.
+    pub variant: Option<String>,
 }
 
 impl Selection {
@@ -86,6 +96,7 @@ pub fn match_asset(
 
     let ranked = rank(candidates, &profile);
     let tied = tie_group_len(&ranked);
+    let ships_variants = distinct_stems(&ranked) > 1;
 
     if tied == 1 {
         let winner = ranked
@@ -94,15 +105,36 @@ pub fn match_asset(
             .expect("tie group of 1 is non-empty");
         let notes = notes_for(&winner, &profile);
         trace_selection("auto_selected", &winner, tied, &notes);
+        let variant = variant_of(&winner, ships_variants);
         return Ok(MatchOutput::AutoSelected(Selection {
             ranked: winner,
             notes,
+            variant,
         }));
     }
 
     let notes = notes_for(&ranked[0], &profile);
     trace_selection("needs_interaction", &ranked[0], tied, &notes);
     Ok(MatchOutput::NeedsInteraction { ranked, notes })
+}
+
+/// How many distinct binaries a release ships, read off the candidate stems.
+///
+/// Assets whose stem came out empty are not counted: a nameless asset says nothing about
+/// how many binaries there are, and counting it would make a one-binary release look like
+/// two and rename the tool to the empty string.
+pub fn distinct_stems(ranked: &[RankedAsset]) -> usize {
+    ranked
+        .iter()
+        .map(|r| r.stem())
+        .filter(|stem| !stem.is_empty())
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+/// The stem to name an asset by, or `None` to leave naming to the repo.
+fn variant_of(chosen: &RankedAsset, ships_variants: bool) -> Option<String> {
+    (ships_variants && !chosen.stem().is_empty()).then(|| chosen.stem().to_string())
 }
 
 /// Re-select the asset a previous install chose. Returns `None` when the pattern does not
@@ -147,6 +179,10 @@ fn pattern_fast_path(
     Some(Selection {
         ranked: winner,
         notes,
+        // The fast path deliberately looks at one asset, so it cannot see whether the
+        // release ships others. It only runs on update, where the name to install under is
+        // already recorded on the tool and never re-derived.
+        variant: None,
     })
 }
 
@@ -177,6 +213,86 @@ mod tests {
 
     fn assets(names: &[&str]) -> Vec<Asset> {
         names.iter().map(|n| asset(n)).collect()
+    }
+
+    /// The bug this whole change exists for: `tool-cli` and `tool-server` both derived
+    /// their install name from the repo, so the second overwrote the first in state.
+    /// Naming them after their own assets is what keeps them apart.
+    #[test]
+    fn a_release_shipping_several_binaries_names_each_after_its_own_asset() {
+        let out = match_asset(
+            assets(&[
+                "tool-cli-1.2.3-x86_64-unknown-linux-gnu.tar.gz",
+                "tool-server-1.2.3-x86_64-unknown-linux-gnu.tar.gz",
+            ]),
+            "x86_64",
+            None,
+            "acme/tool",
+            "v1.2.3",
+            Libc::Gnu,
+        )
+        .unwrap();
+
+        match out {
+            MatchOutput::NeedsInteraction { ranked, .. } => {
+                assert_eq!(distinct_stems(&ranked), 2);
+                let stems: Vec<&str> = ranked.iter().map(|r| r.stem()).collect();
+                assert!(stems.contains(&"tool-cli"));
+                assert!(stems.contains(&"tool-server"));
+            }
+            MatchOutput::AutoSelected(s) => panic!("expected a tie, got {}", s.asset().name),
+        }
+    }
+
+    /// Competing builds of one binary must not look like separate binaries, or every
+    /// ordinary release would start renaming itself.
+    #[test]
+    fn competing_builds_of_one_binary_are_not_variants() {
+        let out = match_asset(
+            assets(&[
+                "ripgrep-14.1.0-x86_64-unknown-linux-gnu.tar.gz",
+                "ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz",
+            ]),
+            "x86_64",
+            None,
+            "BurntSushi/ripgrep",
+            "14.1.0",
+            Libc::Gnu,
+        )
+        .unwrap();
+
+        match out {
+            MatchOutput::AutoSelected(s) => {
+                assert_eq!(s.ranked.stem(), "ripgrep");
+                // One binary: naming stays the repo's business.
+                assert_eq!(s.variant, None);
+            }
+            MatchOutput::NeedsInteraction { .. } => panic!("expected an auto-selection"),
+        }
+    }
+
+    /// A nameless asset says nothing about how many binaries a release ships, and must
+    /// never be counted into a variant split — naming a tool the empty string would
+    /// otherwise follow.
+    #[test]
+    fn a_nameless_asset_is_not_counted_as_a_variant() {
+        let out = match_asset(
+            assets(&["linux-amd64"]),
+            "x86_64",
+            None,
+            "github/gh-skyline",
+            "v0.1.9",
+            Libc::Gnu,
+        )
+        .unwrap();
+
+        match out {
+            MatchOutput::AutoSelected(s) => {
+                assert_eq!(s.ranked.stem(), "");
+                assert_eq!(s.variant, None);
+            }
+            MatchOutput::NeedsInteraction { .. } => panic!("expected an auto-selection"),
+        }
     }
 
     #[test]

@@ -118,7 +118,8 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
                     &format!("Pick an asset for {name}"),
                     config.prefer_libc,
                     false,
-                )?;
+                )?
+                .asset;
                 let install_dir = entry.install_dir(&config.install_dir).to_path_buf();
 
                 pending.push(PendingUpdate {
@@ -177,13 +178,16 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
 
     // Phase D: sequential extract + install (handles interactive binary picker safely)
     for (p, dl) in downloads {
-        // The archive still ships the upstream-named binary; the builder locates it by the
-        // repo-derived name, but (re)installs under the tracked name — which may be an `--alias`.
-        let spec = InstallSpec::builder(&p.entry.repo, &p.release, &p.asset)
+        // The archive ships the upstream-named binary, which for a repo publishing several
+        // is the recorded stem rather than the repo name. Either way it (re)installs under
+        // the tracked name — which may be an `--alias`.
+        let mut builder = InstallSpec::builder(&p.entry.repo, &p.release, &p.asset)
             .install_dir(&p.install_dir)
-            .install_name(&p.entry.binary_name)
-            .build();
-        match spec.install(dl) {
+            .install_name(&p.entry.binary_name);
+        if !p.entry.stem.is_empty() {
+            builder = builder.variant(&p.entry.stem);
+        }
+        match builder.build().install(dl) {
             Ok(ir) => {
                 state.upsert(ir.tool_entry.with_etag(p.new_etag));
                 print_success(&format!(
@@ -295,17 +299,19 @@ pub async fn cmd_update(
                 "Pick an asset",
                 config.prefer_libc,
                 false,
-            )?;
+            )?
+            .asset;
             let install_dir = entry.install_dir(&config.install_dir).to_path_buf();
 
             // Locate the binary in the archive by its upstream name; reinstall under the
             // tracked name (which may be an `--alias`).
-            let result = InstallSpec::builder(&entry.repo, &release, &asset)
+            let mut builder = InstallSpec::builder(&entry.repo, &release, &asset)
                 .install_dir(&install_dir)
-                .install_name(&entry.binary_name)
-                .build()
-                .run(client.http_client())
-                .await?;
+                .install_name(&entry.binary_name);
+            if !entry.stem.is_empty() {
+                builder = builder.variant(&entry.stem);
+            }
+            let result = builder.build().run(client.http_client()).await?;
 
             state.upsert(result.tool_entry.with_etag(new_etag));
             print_success(&format!(

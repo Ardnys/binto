@@ -26,6 +26,8 @@ struct PendingSync {
     entry: ManifestEntry,
     release: Release,
     asset: Asset,
+    /// Which of the repo's binaries this is, when it ships several.
+    variant: Option<String>,
     install_dir: PathBuf,
 }
 
@@ -112,12 +114,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             }
         };
 
-        let install_name = entry
-            .alias
-            .clone()
-            .unwrap_or_else(|| default_binary_name(&entry.repo).to_string());
-
-        match picker::select_asset(
+        let selected = match picker::select_asset(
             &release,
             &user_arch,
             None,
@@ -126,21 +123,33 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             config.prefer_libc,
             false,
         ) {
-            Ok(asset) => pending.push(PendingSync {
-                install_name,
-                entry,
-                release,
-                asset,
-                install_dir: config.install_dir.clone(),
-            }),
+            Ok(selected) => selected,
             Err(e) => {
                 failed += 1;
                 print_warning(&format!(
                     "Failed to pick an asset for {}: {e:#}",
                     entry.repo
                 ));
+                continue;
             }
-        }
+        };
+
+        // Named after the asset when the repo ships several binaries, so two rows for one
+        // repo cannot land on the same filename.
+        let install_name = entry
+            .alias
+            .clone()
+            .or_else(|| selected.variant.clone())
+            .unwrap_or_else(|| default_binary_name(&entry.repo).to_string());
+
+        pending.push(PendingSync {
+            install_name,
+            entry,
+            release,
+            asset: selected.asset,
+            variant: selected.variant,
+            install_dir: config.install_dir.clone(),
+        });
     }
 
     if !pending.is_empty() {
@@ -188,13 +197,16 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             let Some(p) = pending_map.remove(&name) else {
                 continue;
             };
-            // The archive still ships the upstream-named binary; the builder locates it by the
-            // repo-derived name, but installs under the tracked name — which may be an `--alias`.
-            let spec = InstallSpec::builder(&p.entry.repo, &p.release, &p.asset)
+            // The archive ships the upstream-named binary, which for a repo publishing
+            // several is the chosen asset's stem. Either way it installs under the tracked
+            // name — which may be an `--alias`.
+            let mut builder = InstallSpec::builder(&p.entry.repo, &p.release, &p.asset)
                 .install_dir(&p.install_dir)
-                .install_name(&p.install_name)
-                .build();
-            match spec.install(dl) {
+                .install_name(&p.install_name);
+            if let Some(stem) = &p.variant {
+                builder = builder.variant(stem);
+            }
+            match builder.build().install(dl) {
                 Ok(ir) => {
                     installed += 1;
                     print_success(&format!(

@@ -47,6 +47,9 @@ pub async fn cmd_adopt(path: String, repo: String, _config: &Config) -> Result<(
         installed_tag: "unknown".to_string(),
         install_path: bin_path.canonicalize().unwrap_or(bin_path.clone()),
         binary_name: binary_name.clone(),
+        // No asset was involved, so there is no name to read a stem off. Like
+        // `asset_pattern`, the first update fills it in.
+        stem: String::new(),
         asset_pattern: String::new(),
         installed_sha256: sha256,
         etag: None,

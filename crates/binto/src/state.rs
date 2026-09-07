@@ -19,6 +19,17 @@ pub struct ToolEntry {
     pub installed_tag: String,
     pub install_path: PathBuf,
     pub binary_name: String,
+    /// Which binary of `repo` this entry is, as read off the asset name it was installed
+    /// from: `tool-server` for `tool-server-1.2.3-x86_64-unknown-linux-musl.tar.xz`.
+    ///
+    /// Distinct from `binary_name`, which is the filename on disk and may be an `--alias`.
+    /// A repo shipping several binaries needs both — the alias says what the user calls it,
+    /// the stem says which one it is.
+    ///
+    /// Empty for entries written before this was recorded, and for adopted binaries, which
+    /// have no asset to read. Both fill themselves in on the next install or update.
+    #[serde(default)]
+    pub stem: String,
     pub asset_pattern: String,
     pub installed_sha256: Option<String>,
     pub etag: Option<String>,
@@ -160,6 +171,7 @@ mod tests {
             installed_tag: "v1.0.0".to_string(),
             install_path: PathBuf::from(format!("/home/u/.local/bin/{name}")),
             binary_name: name.to_string(),
+            stem: name.to_string(),
             asset_pattern: String::new(),
             installed_sha256: None,
             etag: None,
@@ -223,6 +235,42 @@ mod tests {
         state.upsert(updated);
         assert_eq!(state.tools.len(), 1);
         assert_eq!(state.get("bat").unwrap().etag.as_deref(), Some("abc"));
+    }
+
+    /// Every `state.toml` written before stems existed lacks the key. Loading one must not
+    /// fail — the entry simply does not know which binary of its repo it is until the next
+    /// install or update rebuilds it.
+    #[test]
+    fn a_state_file_without_stems_still_loads() {
+        let raw = r#"
+[tools.bat]
+repo = "sharkdp/bat"
+installed_tag = "v0.24.0"
+install_path = "/home/u/.local/bin/bat"
+binary_name = "bat"
+asset_pattern = "bat-*-x86_64-unknown-linux-gnu.tar.gz"
+"#;
+        let state: State = toml::from_str(raw).unwrap();
+        let bat = state.get("bat").unwrap();
+        assert_eq!(bat.binary_name, "bat");
+        assert_eq!(bat.stem, "");
+    }
+
+    /// The stem is the variant, `binary_name` is the filename — an alias moves one and
+    /// leaves the other alone, which is what lets a repo ship several binaries.
+    #[test]
+    fn an_alias_renames_the_binary_without_changing_which_one_it_is() {
+        let mut aliased = entry("rg", None);
+        aliased.repo = "BurntSushi/ripgrep".to_string();
+        aliased.stem = "ripgrep".to_string();
+
+        let mut state = State::default();
+        state.upsert(aliased);
+
+        // Keyed by the name the user chose...
+        assert!(state.contains("rg"));
+        // ...while still recording which binary of the repo it actually is.
+        assert_eq!(state.get("rg").unwrap().stem, "ripgrep");
     }
 
     #[test]

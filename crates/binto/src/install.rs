@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::config::{self, Config};
 use crate::github::GithubClient;
-use crate::github::types::Release;
+use crate::github::types::{Asset, Release};
 use crate::installer::{InstallResult, InstallSpec, default_binary_name};
 use crate::manifest::Manifest;
 use crate::matcher::facts::detect_arch;
@@ -42,16 +42,34 @@ pub struct InstallRequest<'a> {
     pub assume_yes: bool,
 }
 
+/// A release and the one asset chosen from it, before anything has been downloaded.
+pub struct Resolved {
+    pub release: Release,
+    pub asset: Asset,
+    /// Which of the repo's binaries this asset is, when it ships several.
+    pub variant: Option<String>,
+}
+
+impl Resolved {
+    /// The name this tool will be installed and tracked under.
+    ///
+    /// An explicit `--alias` wins. Otherwise a release shipping several binaries names each
+    /// one after its own asset, and only a release shipping one falls back to the repo.
+    pub fn install_name<'a>(&'a self, alias: Option<&'a str>, repo: &'a str) -> &'a str {
+        alias
+            .or(self.variant.as_deref())
+            .unwrap_or_else(|| default_binary_name(repo))
+    }
+}
+
 impl InstallRequest<'_> {
-    /// Resolve the release per `selection`, pick the matching asset, and download + install it.
-    /// Does NOT touch state or the manifest — callers persist the returned [`InstallResult`]
-    /// (typically via [`State::mutate`]) so the brief, locked write happens *after* this slow
-    /// download work, not during it.
-    pub async fn execute(self, client: &GithubClient, config: &Config) -> Result<InstallResult> {
+    /// Resolve the release per `selection` and pick the matching asset, stopping before any
+    /// download.
+    pub async fn resolve(&self, client: &GithubClient, config: &Config) -> Result<Resolved> {
         let release = self.resolve_release(client, config).await?;
 
         let user_arch = detect_arch();
-        let asset = picker::select_asset(
+        let selected = picker::select_asset(
             &release,
             &user_arch,
             None,
@@ -61,8 +79,24 @@ impl InstallRequest<'_> {
             self.assume_yes,
         )?;
 
-        let mut builder =
-            InstallSpec::builder(self.repo, &release, &asset).install_dir(self.install_dir);
+        Ok(Resolved {
+            release,
+            asset: selected.asset,
+            variant: selected.variant,
+        })
+    }
+
+    /// Download + install what [`resolve`](Self::resolve) picked.
+    pub async fn execute(
+        self,
+        resolved: &Resolved,
+        client: &GithubClient,
+    ) -> Result<InstallResult> {
+        let mut builder = InstallSpec::builder(self.repo, &resolved.release, &resolved.asset)
+            .install_dir(self.install_dir);
+        if let Some(stem) = &resolved.variant {
+            builder = builder.variant(stem);
+        }
         if let Some(alias) = self.alias {
             builder = builder.install_name(alias);
         }
@@ -126,16 +160,31 @@ pub async fn cmd_install(
         None => config.install_dir.clone(),
     };
 
-    // Look for an already-managed tool under its install name (the `--alias`, or the
-    // repo-derived default) before doing any network I/O.
-    // TODO: unless it's a multi-binary project, then we have to match by asset name
-    let state = State::load()?;
+    let token = GithubClient::resolve_token(config.github_token.clone());
+    let client = GithubClient::new(token)?;
 
-    let install_name = alias
-        .as_deref()
-        .unwrap_or_else(|| default_binary_name(repo));
-    // TODO: we might have to allow installing different binaries of the same repository
-    // so we have to check both repo and binary name
+    let selection = match (tag.clone(), assume_yes) {
+        (Some(t), _) => ReleaseSelection::Tag(t),
+        (None, true) => ReleaseSelection::Latest,
+        (None, false) => ReleaseSelection::InteractivePick,
+    };
+
+    let request = InstallRequest {
+        repo,
+        selection,
+        install_dir: &install_dir,
+        alias: alias.as_deref(),
+        include_prerelease,
+        assume_yes,
+    };
+
+    // Pick the asset before deciding anything that depends on the tool's name. A repo
+    // shipping `tool-cli` beside `tool-server` names each after its own asset, so until an
+    // asset is chosen there is no name to look up
+    let resolved = request.resolve(&client, config).await?;
+
+    let state = State::load()?;
+    let install_name = resolved.install_name(alias.as_deref(), repo);
     let already_managed = state
         .get(install_name)
         .is_some_and(|existing| existing.repo == repo);
@@ -178,25 +227,7 @@ pub async fn cmd_install(
         }
     }
 
-    let token = GithubClient::resolve_token(config.github_token.clone());
-    let client = GithubClient::new(token)?;
-
-    let selection = match (tag.clone(), assume_yes) {
-        (Some(t), _) => ReleaseSelection::Tag(t),
-        (None, true) => ReleaseSelection::Latest,
-        (None, false) => ReleaseSelection::InteractivePick,
-    };
-
-    let result = InstallRequest {
-        repo,
-        selection,
-        install_dir: &install_dir,
-        alias: alias.as_deref(),
-        include_prerelease,
-        assume_yes,
-    }
-    .execute(&client, config)
-    .await?;
+    let result = request.execute(&resolved, &client).await?;
 
     // Persist under the global lock, re-reading fresh state so a concurrent `binto install` of a
     // different tool can't clobber this entry (lost update).
@@ -204,7 +235,7 @@ pub async fn cmd_install(
 
     print_success(&format!(
         "Installed {} {} → {}",
-        install_name,
+        result.tool_entry.binary_name,
         result.tool_entry.installed_tag,
         result.installed_path.display()
     ));
