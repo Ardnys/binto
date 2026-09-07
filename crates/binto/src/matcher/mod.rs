@@ -75,17 +75,13 @@ pub fn match_asset(
         "applied hard filters"
     );
 
-    let no_match = || {
-        BintoError::NoCompatibleAssets {
+    if candidates.is_empty() {
+        debug!(outcome = "no_match", "selection");
+        return Err(BintoError::NoCompatibleAssets {
             repo: repo.to_string(),
             tag: tag.to_string(),
         }
-        .into()
-    };
-
-    if candidates.is_empty() {
-        debug!(outcome = "no_match", "selection");
-        return Err(no_match());
+        .into());
     }
 
     let ranked = rank(candidates, &profile);

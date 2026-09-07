@@ -4,6 +4,7 @@
 //! never *judged* (`arch: foreign`). Applying the host, and deciding what that means, is
 //! [`super::filter`]'s job. Nothing downstream re-inspects a filename.
 
+use std::ops::Range;
 use std::sync::LazyLock;
 
 // -- token matching ------------------------------------------------------
@@ -15,33 +16,46 @@ fn is_sep(b: u8) -> bool {
     SEPARATORS.contains(&b)
 }
 
-/// True when `term` occurs in `name` delimited by a separator or a string edge.
+// TODO: i don't like the bytes here
+/// Where `term` occurs in `name` delimited by a separator or a string edge, if it does.
 ///
 /// Plain `contains` is not good enough here: it fires on `arm` inside `alarm` and on
 /// `mac` inside `macchanger`. Callers must still try terms **longest-first** — `_` is a
 /// separator, so `x86` is a genuine token of `x86_64` and only ordering keeps a 64-bit
 /// asset from being read as 32-bit.
-fn has_token(name: &str, term: &str) -> bool {
+fn token_span(name: &str, term: &str) -> Option<Range<usize>> {
+    if term.is_empty() {
+        return None;
+    }
     let bytes = name.as_bytes();
-    name.match_indices(term).any(|(start, _)| {
-        let end = start + term.len();
-        (start == 0 || is_sep(bytes[start - 1])) && (end == bytes.len() || is_sep(bytes[end]))
-    })
+    name.match_indices(term)
+        .map(|(start, _)| start..start + term.len())
+        .find(|span| {
+            (span.start == 0 || is_sep(bytes[span.start - 1]))
+                && (span.end == bytes.len() || is_sep(bytes[span.end]))
+        })
 }
 
-/// The value of the first entry in `table` whose term is a token of `name`.
+/// The first entry in `table` whose term is a token of `name`, with where it matched.
 ///
 /// `table` must be sorted longest term first; [`sorted_longest_first`] does that.
-fn find_token<T: Copy>(name: &str, table: &[(&'static str, T)]) -> Option<T> {
+fn find_token_span<T: Copy>(name: &str, table: &[(&'static str, T)]) -> Option<(T, Range<usize>)> {
     table
         .iter()
-        .find(|(term, _)| has_token(name, term))
-        .map(|(_, value)| *value)
+        .find_map(|(term, value)| token_span(name, term).map(|span| (*value, span)))
 }
 
 fn sorted_longest_first<T>(mut pairs: Vec<(&'static str, T)>) -> Vec<(&'static str, T)> {
     pairs.sort_by_key(|(term, _)| std::cmp::Reverse(term.len()));
     pairs
+}
+
+/// Where the first matching suffix in `table` sits, if `name` ends with one.
+fn suffix_span<T>(name: &str, table: &[(&'static str, T)]) -> Option<Range<usize>> {
+    table
+        .iter()
+        .find(|(suffix, _)| name.ends_with(suffix))
+        .map(|(suffix, _)| name.len() - suffix.len()..name.len())
 }
 
 fn first_suffix<T: Copy>(name: &str, table: &[(&'static str, T)]) -> Option<T> {
@@ -97,7 +111,7 @@ const ARCH_SYNONYMS: &[(&str, &[&str])] = &[
 /// A lone `64bit` is read as `x86_64`: a publisher labelling by word size alone is
 /// shipping for the desktop, and an aarch64 build that cared would have said so.
 ///
-/// Longest term first, as [`find_token`] requires.
+/// Longest term first, as [`find_token_span`] requires.
 const BITNESS_TERMS: &[(&str, &str)] = &[
     ("64-bit", "x86_64"),
     ("32-bit", "32bit"),
@@ -162,6 +176,8 @@ pub fn detect_arch() -> String {
 }
 
 // -- operating system ----------------------------------------------------
+// WARN: currently I hand sort this list
+pub const LINUX_TERMS: &[&str] = &["unknown-linux", "linux"];
 
 // TODO: there's winx, dragonfly
 const OS_FOREIGN_TERMS: &[&str] = &[
@@ -398,56 +414,193 @@ pub struct AssetFacts {
 
 /// Parse an asset name. Case-insensitive; the name is lowercased once here.
 pub fn parse(name: &str) -> AssetFacts {
-    let name = name.to_lowercase();
-
-    AssetFacts {
-        os: parse_os(&name),
-        arch: parse_arch(&name),
-        libc: find_token(&name, &LIBC_SORTED).unwrap_or(LibcFact::Unspecified),
-        kind: parse_kind(&name),
-    }
+    AssetName::new(name).facts()
 }
 
-#[allow(dead_code)]
-pub fn remove_facts(name: &str) -> &str {
-    let name = name.to_lowercase();
+// -- asset names ---------------------------------------------------------
 
-    fn ft<T: Copy>(n: &str, table: &[(&'static str, T)]) -> Option<&'static str> {
-        table
+/// A fact read off an asset name, with every span that stating it consumed.
+///
+/// Both outputs come from one search, so what [`AssetName::facts`] reports and what
+/// [`AssetName::stem`] removes can never disagree about which term matched.
+struct Found<T> {
+    fact: T,
+    spans: Vec<Range<usize>>,
+}
+
+/// One asset's file name, ready to be read for facts or reduced to its stem.
+///
+/// Holds the name twice on purpose. Matching runs against `lower` so tables need only
+/// list lowercase terms, and every span this module produces indexes `lower` — never
+/// `raw`, whose bytes can shift under `to_lowercase` (`İ` is two bytes and lowercases to
+/// three). `raw` is kept verbatim because GitHub download URLs are case-sensitive.
+pub struct AssetName {
+    raw: String,
+    lower: String,
+}
+
+impl AssetName {
+    pub fn new(raw: impl Into<String>) -> Self {
+        let raw = raw.into();
+        let lower = raw.to_lowercase();
+        Self { raw, lower }
+    }
+
+    /// The name exactly as the release published it.
+    #[allow(dead_code)]
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// Everything the matcher reads off this name.
+    pub fn facts(&self) -> AssetFacts {
+        AssetFacts {
+            os: self.find_os().fact,
+            arch: self.find_arch().fact,
+            libc: self.find_libc().fact,
+            kind: parse_kind(&self.lower),
+        }
+    }
+
+    /// What is left of the name once every fact it states is cut out: `tool-server` from
+    /// `tool-server-x86_64-unknown-linux-musl.tar.xz`. Lowercase, since that is what the
+    /// spans index and what an installed filename should be anyway.
+    ///
+    /// `tag` is the release tag the asset shipped under. Without it the version survives
+    /// into the stem (`gh_2.45.0`), because a version is only recognisable relative to the
+    /// tag that produced it.
+    #[allow(dead_code)]
+    pub fn stem(&self, tag: Option<&str>) -> String {
+        let mut spans = Vec::new();
+        spans.extend(self.find_arch().spans);
+        spans.extend(self.find_os().spans);
+        spans.extend(self.find_libc().spans);
+        spans.extend(self.extension_span());
+        spans.extend(tag.and_then(|tag| self.version_span(tag)));
+
+        trim_separators(&cut_spans(&self.lower, spans))
+    }
+
+    /// The named architecture wins the *fact* wherever the word size sits relative to it,
+    /// but both spans are cut: `..._arm64_64bit.tar.gz` states one machine twice.
+    fn find_arch(&self) -> Found<ArchFact> {
+        let named = find_token_span(&self.lower, &ARCH_TERMS);
+        let bits = find_token_span(&self.lower, BITNESS_TERMS);
+
+        let fact = match named.as_ref().or(bits.as_ref()) {
+            Some((canonical, _)) => ArchFact::Named(canonical),
+            None => ArchFact::Unspecified,
+        };
+        let spans = named.into_iter().chain(bits).map(|(_, s)| s).collect();
+
+        Found { fact, spans }
+    }
+
+    fn find_os(&self) -> Found<OsFact> {
+        // A foreign marker wins over `linux`: a name carrying both is not something we can
+        // confidently install, and rejecting is the safe reading.
+        if let Some((marker, span)) = find_token_span(&self.lower, &OS_FOREIGN_SORTED) {
+            return Found {
+                fact: OsFact::Foreign(marker),
+                spans: vec![span],
+            };
+        }
+        if let Some(ext) = first_suffix(&self.lower, OS_FOREIGN_EXTENSIONS) {
+            return Found {
+                fact: OsFact::Foreign(ext),
+                spans: suffix_span(&self.lower, OS_FOREIGN_EXTENSIONS)
+                    .into_iter()
+                    .collect(),
+            };
+        }
+        // Hand-sorted longest-first, so `unknown-linux` is consumed before `linux`.
+        match LINUX_TERMS
             .iter()
-            .find(|(term, _)| has_token(n, term))
-            .map(|(t, _)| *t)
+            .find_map(|term| token_span(&self.lower, term))
+        {
+            Some(span) => Found {
+                fact: OsFact::Linux,
+                spans: vec![span],
+            },
+            None => Found {
+                fact: OsFact::Unspecified,
+                spans: vec![],
+            },
+        }
     }
-    let arch_token = ft(&name, &ARCH_TERMS).expect("Could not find arch token");
-    println!("Arch token: {arch_token}");
-    arch_token
+
+    fn find_libc(&self) -> Found<LibcFact> {
+        match find_token_span(&self.lower, &LIBC_SORTED) {
+            Some((fact, span)) => Found {
+                fact,
+                spans: vec![span],
+            },
+            None => Found {
+                fact: LibcFact::Unspecified,
+                spans: vec![],
+            },
+        }
+    }
+
+    /// Checked in the order [`parse_kind`] uses, so `.tar.gz` is never read as a bare `.gz`.
+    fn extension_span(&self) -> Option<Range<usize>> {
+        suffix_span(&self.lower, SUPPORTED_ARCHIVES)
+            .or_else(|| suffix_span(&self.lower, UNSUPPORTED_ARCHIVES))
+            .or_else(|| suffix_span(&self.lower, NOT_A_BINARY_EXTENSIONS))
+            .or_else(|| suffix_span(&self.lower, OS_FOREIGN_EXTENSIONS))
+    }
+
+    /// Where this asset states its version, given the tag it shipped under.
+    ///
+    /// A release tags `v2.45.0` and names the asset `gh_2.45.0_...`, or the reverse, so
+    /// both spellings are tried. The bare-substring fallback catches a version glued to
+    /// its neighbours, which no token search would find.
+    fn version_span(&self, tag: &str) -> Option<Range<usize>> {
+        let tag = tag.trim().to_lowercase();
+        let bare = tag.trim_start_matches('v');
+        if bare.is_empty() {
+            return None;
+        }
+        let prefixed = format!("v{bare}");
+        let candidates = [tag.as_str(), bare, prefixed.as_str()];
+
+        candidates
+            .iter()
+            .find_map(|c| token_span(&self.lower, c))
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .find_map(|c| self.lower.find(c).map(|start| start..start + c.len()))
+            })
+    }
 }
 
-/// A named architecture if the asset states one, else whatever its word size implies.
-fn parse_arch(name: &str) -> ArchFact {
-    find_token(name, &ARCH_TERMS)
-        .or_else(|| find_token(name, BITNESS_TERMS))
-        .map(ArchFact::Named)
-        .unwrap_or(ArchFact::Unspecified)
+/// `s` with every span removed. Spans may overlap and arrive in any order — `x86_64` as an
+/// architecture overlaps `64` as a word size — so they are sorted and merged as they are cut.
+fn cut_spans(s: &str, mut spans: Vec<Range<usize>>) -> String {
+    spans.sort_by_key(|span| span.start);
+
+    let mut out = String::with_capacity(s.len());
+    let mut cursor = 0;
+    for span in spans {
+        if span.start > cursor {
+            out.push_str(&s[cursor..span.start]);
+        }
+        cursor = cursor.max(span.end);
+    }
+    out.push_str(&s[cursor..]);
+    out
 }
 
-fn parse_os(name: &str) -> OsFact {
-    // A foreign marker wins over `linux`: a name carrying both is not something we can
-    // confidently install, and rejecting is the safe reading.
-    if let Some(marker) = find_token(name, &OS_FOREIGN_SORTED) {
-        return OsFact::Foreign(marker);
-    }
-    if let Some(ext) = first_suffix(name, OS_FOREIGN_EXTENSIONS) {
-        return OsFact::Foreign(ext);
-    }
-    if has_token(name, "linux") {
-        OsFact::Linux
-    } else {
-        OsFact::Unspecified
-    }
+/// Drop the separator runs a cut leaves behind at either edge. Separators *inside* the
+/// stem are load-bearing — they are what makes `tool-cli` a different binary from `tool`.
+fn trim_separators(name: &str) -> String {
+    name.trim_matches(|c: char| c.is_ascii() && is_sep(c as u8))
+        .to_string()
 }
 
 fn parse_kind(name: &str) -> AssetKind {
+    // BUG: name.contains("source") could bug
     if name.contains("source code") || name.contains("source_code") || name.contains("source") {
         return AssetKind::SourceArchive;
     }
@@ -483,6 +636,10 @@ fn parse_kind(name: &str) -> AssetKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn has_token(name: &str, term: &str) -> bool {
+        token_span(name, term).is_some()
+    }
 
     #[test]
     fn tokens_need_boundaries() {
@@ -691,8 +848,12 @@ mod tests {
         assert_eq!(canonical_arch("sparc"), "x86_64");
     }
 
+    fn stem_of(name: &str) -> String {
+        AssetName::new(name).stem(None)
+    }
+
     #[test]
-    fn remove_facts_from_asset_name() {
+    fn a_stem_is_the_name_with_every_stated_fact_cut_out() {
         for (name, expected) in [
             ("tool_linux_amd64.tar.gz", "tool"),
             ("tool-cli_linux_amd64.tar.gz", "tool-cli"),
@@ -701,15 +862,90 @@ mod tests {
                 "tool-server-x86_64-unknown-linux-musl.tar.xz",
                 "tool-server",
             ),
-            ("gh_2.45.0_linux_386.tar.gz", "gh"),
-            ("arduino-cli_1.5.1_Linux_64bit.tar.gz", "arduino-cli"),
             (
                 "ascii-image-converter_Linux_arm64_64bit.tar.gz",
                 "ascii-image-converter",
             ),
+            ("bat-arm-unknown-linux-gnueabihf.tar.gz", "bat"),
+            ("tool-linux-amd64-static", "tool"),
+            // Nothing stated but the OS: the rest of the name is all stem.
+            ("tool-linux.tar.gz", "tool"),
         ] {
-            assert_eq!(remove_facts(name), expected);
+            assert_eq!(stem_of(name), expected, "{name}");
         }
-        assert_eq!(parse("tool-linux.tar.gz").arch, ArchFact::Unspecified);
+    }
+
+    /// The stem is what tells `tool-cli` and `tool-server` apart, so separators *inside*
+    /// it have to survive — only the runs a cut leaves at the edges are trimmed.
+    #[test]
+    fn separators_inside_a_stem_survive() {
+        assert_eq!(stem_of("tool-cli_linux_amd64.tar.gz"), "tool-cli");
+        assert_eq!(
+            stem_of("tool-server-x86_64-unknown-linux-musl.tar.xz"),
+            "tool-server"
+        );
+        // A fact leading the name leaves the separator run in front, not just behind.
+        assert_eq!(stem_of("x86_64-linux-tool.tar.gz"), "tool");
+    }
+
+    /// Without the tag a version is unrecognisable, so it stays; with the tag it goes,
+    /// whichever side of the `v` each spelling falls on.
+    #[test]
+    fn a_version_is_only_removable_against_its_release_tag() {
+        let gh = AssetName::new("gh_2.45.0_linux_386.tar.gz");
+        assert_eq!(gh.stem(None), "gh_2.45.0");
+        assert_eq!(gh.stem(Some("v2.45.0")), "gh");
+        assert_eq!(gh.stem(Some("2.45.0")), "gh");
+
+        let arduino = AssetName::new("arduino-cli_1.5.1_Linux_64bit.tar.gz");
+        assert_eq!(arduino.stem(None), "arduino-cli_1.5.1");
+        assert_eq!(arduino.stem(Some("1.5.1")), "arduino-cli");
+
+        // The asset carries the `v`, the tag does not.
+        let tool = AssetName::new("tool-v1.2.3-linux-amd64.tar.gz");
+        assert_eq!(tool.stem(Some("1.2.3")), "tool");
+        assert_eq!(tool.stem(Some("v1.2.3")), "tool");
+
+        // A tag that appears nowhere in the name leaves the stem alone.
+        assert_eq!(stem_of("tool_linux_amd64.tar.gz"), "tool");
+        assert_eq!(
+            AssetName::new("tool_linux_amd64.tar.gz").stem(Some("v9.9.9")),
+            "tool"
+        );
+    }
+
+    /// The removers this replaced searched with a plain `contains`, so `arm` inside
+    /// `alarm` cut a hole in the stem.
+    #[test]
+    fn a_stem_cut_respects_token_boundaries() {
+        assert_eq!(stem_of("alarm-clock-linux-amd64.tar.gz"), "alarm-clock");
+        assert_eq!(stem_of("macchanger-linux-amd64.tar.gz"), "macchanger");
+        assert_eq!(stem_of("gnuplot-linux-amd64.tar.gz"), "gnuplot");
+    }
+
+    /// `arm64` and `64bit` overlap in `..._arm64_64bit...`; cutting both must not
+    /// double-cut the shared bytes or panic on the reversed span.
+    #[test]
+    fn overlapping_facts_are_cut_once() {
+        assert_eq!(
+            stem_of("ascii-image-converter_Linux_arm64_64bit.tar.gz"),
+            "ascii-image-converter"
+        );
+        assert_eq!(stem_of("tool_linux_64bit_armv7.tar.gz"), "tool");
+        assert_eq!(stem_of("tool_Linux_64-bit_ppc64le.tar.gz"), "tool");
+    }
+
+    /// Spans index the lowercased name, and `raw` is never sliced — a name whose case
+    /// folding changes its byte length would otherwise slice mid-character and panic.
+    #[test]
+    fn a_stem_is_lowercase_and_leaves_the_raw_name_alone() {
+        let name = AssetName::new("Tool-CLI_Linux_AMD64.tar.gz");
+        assert_eq!(name.stem(None), "tool-cli");
+        assert_eq!(name.raw(), "Tool-CLI_Linux_AMD64.tar.gz");
+
+        // `İ` is two bytes and lowercases to three.
+        let turkish = AssetName::new("İtool_linux_amd64.tar.gz");
+        assert_eq!(turkish.raw(), "İtool_linux_amd64.tar.gz");
+        assert!(turkish.stem(None).ends_with("tool"));
     }
 }

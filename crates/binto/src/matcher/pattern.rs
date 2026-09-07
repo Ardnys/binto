@@ -1,3 +1,4 @@
+// TODO: delete this file
 /// Generate a glob pattern from an asset name by replacing the version string with `*`.
 /// E.g.: "gh_2.45.0_linux_amd64.tar.gz" with tag "v2.45.0" → "gh_*_linux_amd64.tar.gz"
 pub fn asset_to_pattern(asset_name: &str, tag: &str) -> String {

@@ -53,6 +53,7 @@ fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 // TODO: this is vendor dependent
+// TODO: move this out of main.rs
 /// Accept either "owner/repo" or any github.com URL and return "owner/repo".
 fn parse_repo(input: &str) -> Result<String> {
     let s = input.trim().trim_end_matches('/');
@@ -94,6 +95,7 @@ async fn main() {
     }
 }
 
+// TODO: move this out of main.rs
 /// Restore the terminal cursor on Ctrl-C.
 ///
 /// Interactive prompts (dialoguer's release/asset pickers) hide the cursor while open and
@@ -119,6 +121,7 @@ async fn run(cli: Cli) -> Result<()> {
         maybe_print_stale_banner(&config);
     }
 
+    // TODO: it would be nice to have command in a `commands/` folder to keep `src/` tidy
     match cli.command {
         Commands::Install {
             repo,

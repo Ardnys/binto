@@ -1,3 +1,4 @@
+// TODO: this file is a bit redundant. could be moved to matcher::mod.rs
 use anyhow::Result;
 
 use crate::config::Libc;
@@ -6,6 +7,7 @@ use crate::matcher::rank::SelectionNote;
 use crate::matcher::{MatchOutput, match_asset};
 use crate::output::print_info;
 
+// TODO: this could be an impl SelectionNote
 /// One line explaining what the release could not give you, for the notes the matcher
 /// attached to its pick.
 fn describe(note: &SelectionNote) -> String {

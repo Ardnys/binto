@@ -130,6 +130,7 @@ pub async fn cmd_install(
     // repo-derived default) before doing any network I/O.
     // TODO: unless it's a multi-binary project, then we have to match by asset name
     let state = State::load()?;
+
     let install_name = alias
         .as_deref()
         .unwrap_or_else(|| default_binary_name(repo));
