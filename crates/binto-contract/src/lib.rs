@@ -137,6 +137,15 @@ pub enum SelectionNote {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub name: String,
+    /// `name` with every fact it states cut out, and its version cut out too when the
+    /// release tag identifies one: `tool-server` from
+    /// `tool-server-1.2.3-x86_64-unknown-linux-musl.tar.xz`.
+    ///
+    /// Candidates sharing a stem are competing builds of one binary. Differing stems mean
+    /// the release ships more than one, which is how a repo publishing `tool-cli` beside
+    /// `tool-server` is told apart from one publishing two flavours of the same tool.
+    #[serde(default)]
+    pub stem: String,
     pub tiers: Tiers,
     /// Empty when every preference was met and every dimension was stated. Only
     /// populated for the selected asset and the leader of a tie.

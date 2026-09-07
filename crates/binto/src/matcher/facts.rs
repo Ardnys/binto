@@ -412,11 +412,6 @@ pub struct AssetFacts {
     pub kind: AssetKind,
 }
 
-/// Parse an asset name. Case-insensitive; the name is lowercased once here.
-pub fn parse(name: &str) -> AssetFacts {
-    AssetName::new(name).facts()
-}
-
 // -- asset names ---------------------------------------------------------
 
 /// A fact read off an asset name, with every span that stating it consumed.
@@ -469,7 +464,6 @@ impl AssetName {
     /// `tag` is the release tag the asset shipped under. Without it the version survives
     /// into the stem (`gh_2.45.0`), because a version is only recognisable relative to the
     /// tag that produced it.
-    #[allow(dead_code)]
     pub fn stem(&self, tag: Option<&str>) -> String {
         let mut spans = Vec::new();
         spans.extend(self.find_arch().spans);
@@ -478,7 +472,7 @@ impl AssetName {
         spans.extend(self.extension_span());
         spans.extend(tag.and_then(|tag| self.version_span(tag)));
 
-        trim_separators(&cut_spans(&self.lower, spans))
+        tidy_separators(&cut_spans(&self.lower, spans))
     }
 
     /// The named architecture wins the *fact* wherever the word size sits relative to it,
@@ -557,12 +551,13 @@ impl AssetName {
     /// its neighbours, which no token search would find.
     fn version_span(&self, tag: &str) -> Option<Range<usize>> {
         let tag = tag.trim().to_lowercase();
-        let bare = tag.trim_start_matches('v');
+        let version = version_of_tag(&tag);
+        let bare = version.trim_start_matches('v');
         if bare.is_empty() {
             return None;
         }
         let prefixed = format!("v{bare}");
-        let candidates = [tag.as_str(), bare, prefixed.as_str()];
+        let candidates = [version, bare, prefixed.as_str()];
 
         candidates
             .iter()
@@ -573,6 +568,40 @@ impl AssetName {
                     .find_map(|c| self.lower.find(c).map(|start| start..start + c.len()))
             })
     }
+}
+
+/// The version portion of a release tag.
+///
+/// A repo shipping several products tags per product — `jql-v8.1.2`, `lutgen-studio-v0.4.0` —
+/// and cutting the whole tag out of `jql-v8.1.2-x86_64-unknown-linux-musl.tar.gz` takes the
+/// binary's name with it, leaving an empty stem. Only the part that looks like a version is
+/// one: the earliest separator-delimited run beginning with an optional `v` and then a digit.
+///
+/// A tag naming no version at all (`nightly`) is returned whole, since the whole tag is then
+/// the closest thing to a version the release has.
+fn version_of_tag(tag: &str) -> &str {
+    let bytes = tag.as_bytes();
+    // Every start index is either 0 or preceded by an ASCII boundary byte, so it is always
+    // a char boundary.
+    (0..tag.len())
+        .filter(|&i| i == 0 || is_tag_boundary(bytes[i - 1]))
+        .find(|&i| {
+            let rest = &tag[i..];
+            rest.strip_prefix('v')
+                .unwrap_or(rest)
+                .starts_with(|c: char| c.is_ascii_digit())
+        })
+        .map(|i| &tag[i..])
+        .unwrap_or(tag)
+}
+
+/// Where a version is allowed to begin inside a tag: after a scope or word separator.
+///
+/// Deliberately not [`is_sep`]. A `.` sits *inside* a version, so accepting it as a start
+/// makes `cli/v2.2.1` match at the second dot and report `2.1`. A `/` is not a separator in
+/// an asset name but is the usual scope marker in a monorepo tag.
+fn is_tag_boundary(b: u8) -> bool {
+    matches!(b, b'-' | b'_' | b'/' | b' ')
 }
 
 /// `s` with every span removed. Spans may overlap and arrive in any order — `x86_64` as an
@@ -592,16 +621,32 @@ fn cut_spans(s: &str, mut spans: Vec<Range<usize>>) -> String {
     out
 }
 
-/// Drop the separator runs a cut leaves behind at either edge. Separators *inside* the
-/// stem are load-bearing — they are what makes `tool-cli` a different binary from `tool`.
-fn trim_separators(name: &str) -> String {
-    name.trim_matches(|c: char| c.is_ascii() && is_sep(c as u8))
-        .to_string()
+/// Tidy the separator runs a cut leaves behind: drop them at either edge, and collapse an
+/// interior run to its first character so `tool-x86_64-linux-gnu-v3.tar.gz` reduces to
+/// `tool-v3` rather than `tool---v3`.
+///
+/// A single interior separator is load-bearing — it is what makes `tool-cli` a different
+/// binary from `tool` — so only runs are touched, and the surviving character keeps the
+/// name's own style (`_` stays `_`).
+fn tidy_separators(name: &str) -> String {
+    let trimmed = name.trim_matches(|c: char| c.is_ascii() && is_sep(c as u8));
+
+    let mut out = String::with_capacity(trimmed.len());
+    let mut in_run = false;
+    for c in trimmed.chars() {
+        let sep = c.is_ascii() && is_sep(c as u8);
+        if !(sep && in_run) {
+            out.push(c);
+        }
+        in_run = sep;
+    }
+    out
 }
 
 fn parse_kind(name: &str) -> AssetKind {
-    // BUG: name.contains("source") could bug
-    if name.contains("source code") || name.contains("source_code") || name.contains("source") {
+    // Token-delimited, not `contains`: `resource-manager` and `opensource-cli` are
+    // binaries, and a substring test rejects both as source archives.
+    if token_span(name, "source").is_some() {
         return AssetKind::SourceArchive;
     }
     if let Some(ext) = CHECKSUM_EXTENSIONS.iter().find(|ext| name.ends_with(*ext)) {
@@ -639,6 +684,10 @@ mod tests {
 
     fn has_token(name: &str, term: &str) -> bool {
         token_span(name, term).is_some()
+    }
+
+    fn parse(name: &str) -> AssetFacts {
+        AssetName::new(name).facts()
     }
 
     #[test]
@@ -923,6 +972,37 @@ mod tests {
         assert_eq!(stem_of("gnuplot-linux-amd64.tar.gz"), "gnuplot");
     }
 
+    /// A substring test read `resource` and `opensource` as source archives and rejected
+    /// the binary outright.
+    #[test]
+    fn source_is_matched_as_a_token_not_a_substring() {
+        for name in [
+            "resource-manager_linux_amd64.tar.gz",
+            "opensource-cli_linux_amd64.tar.gz",
+            "datasource_linux_amd64.tar.gz",
+        ] {
+            assert_eq!(
+                parse(name).kind,
+                AssetKind::Installable(Format::Tar),
+                "{name}"
+            );
+        }
+        // The genuine article, however it is spelled.
+        for name in ["Source code (zip)", "tool_source_code.tar.gz"] {
+            assert_eq!(parse(name).kind, AssetKind::SourceArchive, "{name}");
+        }
+    }
+
+    /// A cut in the middle of a name leaves the separators from both sides touching, and
+    /// a stem is a filename — `tool---v3` is not one.
+    #[test]
+    fn interior_separator_runs_collapse_to_one() {
+        assert_eq!(stem_of("tool-x86_64-linux-gnu-v3.tar.gz"), "tool-v3");
+        assert_eq!(stem_of("tool_linux_amd64_extras.tar.gz"), "tool_extras");
+        // A version's own dots are single separators and survive untouched.
+        assert_eq!(stem_of("gh_2.45.0_linux_386.tar.gz"), "gh_2.45.0");
+    }
+
     /// `arm64` and `64bit` overlap in `..._arm64_64bit...`; cutting both must not
     /// double-cut the shared bytes or panic on the reversed span.
     #[test]
@@ -947,5 +1027,63 @@ mod tests {
         let turkish = AssetName::new("İtool_linux_amd64.tar.gz");
         assert_eq!(turkish.raw(), "İtool_linux_amd64.tar.gz");
         assert!(turkish.stem(None).ends_with("tool"));
+    }
+
+    /// A repo that tags per product puts the product's name in the tag, so cutting the tag
+    /// whole took the binary's name with it. Every one of these came back empty from a real
+    /// harness run before the version was separated from the tag.
+    #[test]
+    fn a_name_prefixed_tag_gives_up_only_its_version() {
+        for (name, tag, expected) in [
+            (
+                "jql-v8.1.2-x86_64-unknown-linux-musl.tar.gz",
+                "jql-v8.1.2",
+                "jql",
+            ),
+            (
+                "iwe-v0.8.0-x86_64-unknown-linux-gnu.tar.gz",
+                "iwe-v0.8.0",
+                "iwe",
+            ),
+            (
+                "lutgen-studio-v0.4.0-x86_64-unknown-linux-gnu",
+                "lutgen-studio-v0.4.0",
+                "lutgen-studio",
+            ),
+            // Scoped with `/` rather than `-`.
+            ("plandex_2.2.1_linux_amd64.tar.gz", "cli/v2.2.1", "plandex"),
+            ("dnote_0.16.0_linux_amd64.tar.gz", "cli-v0.16.0", "dnote"),
+        ] {
+            assert_eq!(AssetName::new(name).stem(Some(tag)), expected, "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_tag_is_split_at_the_version_it_names() {
+        assert_eq!(version_of_tag("jql-v8.1.2"), "v8.1.2");
+        assert_eq!(version_of_tag("lutgen-studio-v0.4.0"), "v0.4.0");
+        assert_eq!(version_of_tag("ipinfo-3.3.2"), "3.3.2");
+        // A monorepo scopes its tag with `/`, which no asset name uses as a separator.
+        assert_eq!(version_of_tag("cli/v2.2.1"), "v2.2.1");
+        // A `.` is interior to a version, never the start of one: accepting it here read
+        // `cli/v2.2.1` as `2.1` and left `plandex_2` behind.
+        assert_eq!(version_of_tag("2.2.1"), "2.2.1");
+        // Plain tags are already nothing but a version.
+        assert_eq!(version_of_tag("v2.45.0"), "v2.45.0");
+        assert_eq!(version_of_tag("1.5.1"), "1.5.1");
+        // A prerelease suffix belongs to the version, not to the name.
+        assert_eq!(version_of_tag("app-v1.2.3-beta.1"), "v1.2.3-beta.1");
+        // Nothing version-shaped: the whole tag is the best a release has to offer.
+        assert_eq!(version_of_tag("nightly"), "nightly");
+    }
+
+    /// Splitting the tag must not make version removal greedier — a tag absent from the
+    /// name still cuts nothing.
+    #[test]
+    fn a_tag_that_is_not_in_the_name_cuts_nothing() {
+        let tool = AssetName::new("tool_linux_amd64.tar.gz");
+        assert_eq!(tool.stem(Some("v9.9.9")), "tool");
+        assert_eq!(tool.stem(Some("other-v9.9.9")), "tool");
+        assert_eq!(tool.stem(Some("nightly")), "tool");
     }
 }

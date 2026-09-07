@@ -81,6 +81,13 @@ impl RankedAsset {
         &self.candidate.asset.name
     }
 
+    /// What this asset's name reduces to once its facts are cut out. Assets sharing a stem
+    /// are competing builds of one binary; differing stems mean the release ships more
+    /// than one.
+    pub fn stem(&self) -> &str {
+        &self.candidate.stem
+    }
+
     /// Tier labels for the trace and the verdict, in priority order.
     pub fn labels(&self) -> [(&'static str, &'static str); 4] {
         [
@@ -227,7 +234,7 @@ mod tests {
     /// pre-filtered candidates.
     fn ranked(names: &[&str], host_arch: &str, libc: Libc) -> Vec<RankedAsset> {
         let assets = names.iter().map(|n| asset(n)).collect();
-        let (candidates, _) = apply_hard_filters(assets, host_arch);
+        let (candidates, _) = apply_hard_filters(assets, host_arch, None);
         rank(candidates, &PreferenceProfile::new(libc))
     }
 

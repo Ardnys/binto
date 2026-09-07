@@ -210,6 +210,7 @@ fn candidate_of(r: &RankedAsset, notes: &[SelectionNote]) -> Candidate {
     let [(_, arch), (_, os), (_, libc), (_, format)] = r.labels();
     Candidate {
         name: r.name().to_string(),
+        stem: r.stem().to_string(),
         tiers: binto_contract::Tiers {
             arch: arch.to_string(),
             os: os.to_string(),

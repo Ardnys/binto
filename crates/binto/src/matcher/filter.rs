@@ -7,7 +7,7 @@
 use tracing::debug;
 
 use crate::github::types::Asset;
-use crate::matcher::facts::{self, ArchFact, AssetKind, Format, LibcFact, OsFact};
+use crate::matcher::facts::{self, ArchFact, AssetKind, AssetName, Format, LibcFact, OsFact};
 
 /// Why an asset cannot be installed here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +65,9 @@ impl RejectReason {
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub asset: Asset,
+    /// The name with every fact it states cut out — what tells `tool-cli` apart from
+    /// `tool-server` when one release ships both.
+    pub stem: String,
     pub os: OsFact,
     pub arch: ArchFact,
     pub libc: LibcFact,
@@ -76,16 +79,23 @@ pub struct Candidate {
 /// `host_arch` is a raw machine name (`uname -m` or `--arch`); it is canonicalised here.
 /// Assets naming no architecture are kept — plenty of releases ship one unlabelled binary
 /// — and are demoted by tier instead.
+///
+/// `tag` is the release these assets came from. It only sharpens the stem — a version is
+/// unrecognisable without the tag that produced it — and never changes what is kept.
 pub fn apply_hard_filters(
     assets: Vec<Asset>,
     host_arch: &str,
+    tag: Option<&str>,
 ) -> (Vec<Candidate>, Vec<(Asset, RejectReason)>) {
     let host = facts::canonical_arch(host_arch);
     let mut kept = Vec::new();
     let mut rejected = Vec::new();
 
     for asset in assets {
-        let f = facts::parse(&asset.name);
+        // One parse per asset: the facts below and the stem carried forward come from the
+        // same read of the name and cannot disagree about which terms matched.
+        let name = AssetName::new(&asset.name);
+        let f = name.facts();
 
         // The packaging decides whether the asset is an artifact at all; only then does
         // the host get a say. `Ok` carries the format forward so the candidate below
@@ -106,6 +116,7 @@ pub fn apply_hard_filters(
 
         match verdict {
             Ok(format) => kept.push(Candidate {
+                stem: name.stem(tag),
                 asset,
                 os: f.os,
                 arch: f.arch,
@@ -141,7 +152,7 @@ mod tests {
     }
 
     fn kept_names(assets: Vec<Asset>, host_arch: &str) -> Vec<String> {
-        apply_hard_filters(assets, host_arch)
+        apply_hard_filters(assets, host_arch, None)
             .0
             .into_iter()
             .map(|c| c.asset.name)
@@ -214,6 +225,7 @@ mod tests {
                 asset("tool-x86_64-linux.tar.gz"),
             ],
             "x86_64",
+            None,
         );
         assert_eq!(
             kept.into_iter().map(|c| c.asset.name).collect::<Vec<_>>(),
@@ -247,11 +259,55 @@ mod tests {
         let (kept, _) = apply_hard_filters(
             vec![asset("ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz")],
             "x86_64",
+            None,
         );
         let c = &kept[0];
         assert_eq!(c.os, OsFact::Linux);
         assert_eq!(c.arch, ArchFact::Named("x86_64"));
         assert_eq!(c.libc, LibcFact::Musl);
         assert_eq!(c.format, Format::Tar);
+    }
+
+    /// The tag only sharpens the stem — it must never change which assets survive.
+    #[test]
+    fn candidates_carry_a_stem_that_the_tag_only_sharpens() {
+        let release = || {
+            vec![
+                asset("ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz"),
+                asset("ripgrep-14.1.0-x86_64-unknown-linux-gnu.tar.gz"),
+            ]
+        };
+
+        let (untagged, _) = apply_hard_filters(release(), "x86_64", None);
+        let (tagged, _) = apply_hard_filters(release(), "x86_64", Some("14.1.0"));
+
+        assert_eq!(
+            untagged.iter().map(|c| c.stem.clone()).collect::<Vec<_>>(),
+            vec!["ripgrep-14.1.0", "ripgrep-14.1.0"]
+        );
+        assert_eq!(
+            tagged.iter().map(|c| c.stem.clone()).collect::<Vec<_>>(),
+            vec!["ripgrep", "ripgrep"]
+        );
+        assert_eq!(untagged.len(), tagged.len());
+    }
+
+    /// The whole point of carrying a stem: two binaries from one release are told apart,
+    /// while two builds of one binary are not.
+    #[test]
+    fn separate_binaries_get_separate_stems() {
+        let (kept, _) = apply_hard_filters(
+            vec![
+                asset("tool-cli-1.2.3-x86_64-unknown-linux-gnu.tar.gz"),
+                asset("tool-cli-1.2.3-x86_64-unknown-linux-musl.tar.gz"),
+                asset("tool-server-1.2.3-x86_64-unknown-linux-gnu.tar.gz"),
+            ],
+            "x86_64",
+            Some("v1.2.3"),
+        );
+        assert_eq!(
+            kept.iter().map(|c| c.stem.clone()).collect::<Vec<_>>(),
+            vec!["tool-cli", "tool-cli", "tool-server"]
+        );
     }
 }

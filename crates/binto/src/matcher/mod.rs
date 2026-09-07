@@ -61,13 +61,13 @@ pub fn match_asset(
 
     // Pattern fast-path: if we have a stored pattern and it matches exactly one asset.
     if let Some(pat) = stored_pattern
-        && let Some(selection) = pattern_fast_path(pat, &all_assets, user_arch, &profile)
+        && let Some(selection) = pattern_fast_path(pat, &all_assets, user_arch, tag, &profile)
     {
         return Ok(MatchOutput::AutoSelected(selection));
     }
 
     let total_assets = all_assets.len();
-    let (candidates, rejected) = apply_hard_filters(all_assets, user_arch);
+    let (candidates, rejected) = apply_hard_filters(all_assets, user_arch, Some(tag));
     debug!(
         before = total_assets,
         after = candidates.len(),
@@ -112,6 +112,7 @@ fn pattern_fast_path(
     pat: &str,
     all_assets: &[Asset],
     user_arch: &str,
+    tag: &str,
     profile: &PreferenceProfile,
 ) -> Option<Selection> {
     let names: Vec<&str> = all_assets.iter().map(|a| a.name.as_str()).collect();
@@ -127,7 +128,7 @@ fn pattern_fast_path(
     }
 
     let asset = all_assets.iter().find(|a| a.name == matched[0])?.clone();
-    let (mut candidates, _) = apply_hard_filters(vec![asset], user_arch);
+    let (mut candidates, _) = apply_hard_filters(vec![asset], user_arch, Some(tag));
     let candidate = candidates.pop().or_else(|| {
         debug!(
             pattern = pat,
