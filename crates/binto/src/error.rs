@@ -21,6 +21,9 @@ pub enum BintoError {
     #[error("State file corrupted: {0}")]
     StateCorrupted(String),
 
+    #[error("Manifest file corrupted: {0}")]
+    ManifestCorrupted(String),
+
     #[error("Binary not found in archive after extraction")]
     BinaryNotFoundInArchive,
 

@@ -61,7 +61,7 @@ pub async fn cmd_adopt(path: String, repo: String, _config: &Config) -> Result<(
 
     // Record the adopted tool in the portable manifest (unpinned) so `binto sync` on another
     // machine reinstalls it from its GitHub releases.
-    Manifest::set_tag_and_save(&repo, None)?;
+    Manifest::set_tag_and_save(&repo, None, None)?;
 
     print_success(&format!(
         "Adopted {binary_name} ({repo}). Run `binto update {binary_name}` to detect the current version."

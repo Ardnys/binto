@@ -243,7 +243,12 @@ pub async fn cmd_install(
     // Keep the declarative manifest in sync. The tag (Some => pinned, None => clears any
     // existing pin) and the alias are recorded against the repo so `binto sync` can replay
     // both elsewhere. Format-preserving write: comments/ordering elsewhere are kept.
-    Manifest::record_and_save(repo, tag.as_deref(), alias.as_deref())?;
+    Manifest::record_and_save(
+        repo,
+        resolved.variant.as_deref(),
+        tag.as_deref(),
+        alias.as_deref(),
+    )?;
 
     // Warn if the install dir is not on PATH
     // BUG: it looks weird with "." as a path

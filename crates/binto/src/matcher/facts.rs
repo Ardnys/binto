@@ -550,6 +550,11 @@ impl AssetName {
     /// both spellings are tried. The bare-substring fallback catches a version glued to
     /// its neighbours, which no token search would find.
     fn version_span(&self, tag: &str) -> Option<Range<usize>> {
+        // BUG: versions don't always follow the release tag for multiple binaries
+        // Take lutgen-cli release v1.0.1:
+        // it contains the new lutgen-cli v1.0.1 and THE LATEST lutgen-studio v0.3.0 because they are not released together.
+        // Then lutgen studio v0.4.0 release tag ships the latest cli and the new studio.
+        // Confusing
         let tag = tag.trim().to_lowercase();
         let version = version_of_tag(&tag);
         let bare = version.trim_start_matches('v');

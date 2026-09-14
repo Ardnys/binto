@@ -53,6 +53,13 @@ impl ToolEntry {
         self.install_path.parent().unwrap_or(fallback)
     }
 
+    /// Which binary of its repo this is, for manifest lookups. `None` when nothing was
+    /// recorded — an entry written before stems existed, or an adopted binary. Both mean
+    /// "the one binary this repo ships", which is what a manifest row naming none asks for.
+    pub fn binary(&self) -> Option<&str> {
+        (!self.stem.is_empty()).then_some(self.stem.as_str())
+    }
+
     /// Builder-style override of the cached ETag, used after a successful install so the
     /// next conditional request can short-circuit with `304 Not Modified`.
     pub fn with_etag(mut self, etag: Option<String>) -> Self {
@@ -122,11 +129,20 @@ impl State {
         self.tools.contains_key(name)
     }
 
-    /// Whether any managed tool was installed from `repo`. Used by `sync` to skip
-    /// manifest entries that are already installed (state is keyed by binary name,
-    /// the manifest by repo, so the lookup is by value here).
-    pub fn contains_repo(&self, repo: &str) -> bool {
-        self.tools.values().any(|e| e.repo == repo)
+    /// Whether the binary a manifest row asks for is already installed.
+    ///
+    /// State is keyed by install name and the manifest by repo, so the lookup is by value.
+    /// A `binary` of `None` is a row naming none, which any tool from that repo answers;
+    /// naming one means only that binary counts, so `sync` still installs `tool-server`
+    /// after `tool-cli` rather than seeing the repo and skipping the rest.
+    pub fn has_binary(&self, repo: &str, binary: Option<&str>) -> bool {
+        self.tools.values().any(|e| {
+            e.repo == repo
+                && match binary {
+                    None => true,
+                    Some(name) => e.stem == name,
+                }
+        })
     }
 
     /// Look up a tool, returning a typed `UnknownTool` error if it isn't managed.

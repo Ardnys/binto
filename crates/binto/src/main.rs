@@ -377,7 +377,7 @@ fn cmd_list(json: bool, _config: &Config) -> Result<()> {
         let mut tag = entry.installed_tag.clone();
 
         // put an asterisk on pinned release tags
-        if manifest.is_pinned(&entry.repo).is_some() {
+        if manifest.is_pinned(&entry.repo, entry.binary()).is_some() {
             tag.push('*');
         }
 
@@ -450,7 +450,7 @@ fn cmd_remove(name: &str, yes: bool, _config: &Config) -> Result<()> {
     // Keep the declarative manifest in sync: drop the row for this tool's repo so a later
     // `binto sync` won't reinstall it. State is keyed by binary name, the manifest by repo.
     // Format-preserving write: comments and unrelated entries are left untouched.
-    manifest::Manifest::remove_and_save(&entry.repo)?;
+    manifest::Manifest::remove_and_save(&entry.repo, entry.binary())?;
 
     print_success(&format!("Removed {name}."));
     Ok(())

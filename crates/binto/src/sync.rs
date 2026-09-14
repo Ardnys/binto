@@ -46,7 +46,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
 
     // An empty manifest means "install nothing". Without --prune there's nothing to do; with
     // --prune it means "nothing should be managed", so fall through to the prune phase.
-    if manifest.tools.is_empty() && !prune {
+    if manifest.is_empty() && !prune {
         print_info(&format!(
             "Manifest is empty ({}). Install a tool or add entries to it first.",
             Manifest::manifest_path().display()
@@ -64,11 +64,11 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
     // Phase A: concurrent release resolution. Pinned entries resolve their exact tag; the rest
     // resolve the newest non-draft release. Tools already in state are skipped up front so we
     // don't waste a request on them.
-    let snapshot: Vec<ManifestEntry> = manifest.iter().cloned().collect();
+    let snapshot: Vec<ManifestEntry> = manifest.iter().collect();
     let mut api_set: JoinSet<(ManifestEntry, Result<Release>)> = JoinSet::new();
 
     for entry in snapshot {
-        if state.contains_repo(&entry.repo) {
+        if state.has_binary(&entry.repo, entry.binary.as_deref()) {
             skipped += 1;
             continue;
         }
@@ -248,7 +248,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
 fn prune_extras(state: &mut State, manifest: &Manifest, yes: bool) -> Result<()> {
     let extras: Vec<(String, PathBuf)> = state
         .iter()
-        .filter(|(_, e)| manifest.get(&e.repo).is_none())
+        .filter(|(_, e)| !manifest.covers(&e.repo, &e.stem))
         .map(|(name, e)| (name.to_owned(), e.install_path.clone()))
         .collect();
 

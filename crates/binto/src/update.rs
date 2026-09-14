@@ -60,7 +60,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         JoinSet::new();
 
     for (name, entry) in snapshot {
-        if let Some(tag) = manifest.is_pinned(&entry.repo) {
+        if let Some(tag) = manifest.is_pinned(&entry.repo, entry.binary()) {
             print_status(&format!(
                 "  {} {} (pinned {tag})",
                 console::style(&name).blue().bold(),
@@ -237,7 +237,7 @@ pub async fn cmd_update(
     // the common case being "I pinned an older version because latest was broken; it's fixed
     // now, take me back to latest."
     let manifest = Manifest::load()?;
-    let pinned_tag = manifest.is_pinned(&entry.repo).map(str::to_string);
+    let pinned_tag = manifest.is_pinned(&entry.repo, entry.binary());
     if let Some(tag) = pinned_tag {
         if !force {
             print_info(&format!(
@@ -248,7 +248,7 @@ pub async fn cmd_update(
             return Ok(());
         }
 
-        Manifest::set_tag_and_save(&entry.repo, None)?;
+        Manifest::set_tag_and_save(&entry.repo, entry.binary(), None)?;
         print_info(&format!(
             "Cleared pin on {tool_name} (was {tag}); updating to the latest release."
         ));
@@ -366,7 +366,7 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
         JoinSet::new();
 
     for (name, entry) in snapshot {
-        if manifest.is_pinned(&entry.repo).is_some() {
+        if manifest.is_pinned(&entry.repo, entry.binary()).is_some() {
             print_warning(&format!(
                 "{} is pinned to {}. Skipping update check.",
                 entry.repo, entry.installed_tag
