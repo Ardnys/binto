@@ -70,6 +70,7 @@ fn first_suffix<T: Copy>(name: &str, table: &[(&'static str, T)]) -> Option<T> {
 // TODO: some repos have both x86_64 and amd64 in assets?
 // TODO: there's also "baseline" builds. Default to "baseline" if stuck between these choices. Additional info:
 // TODO: there's "default" or "dev" builds as well
+// BUG: x86-64 is parsed as "foreign_arch"
 // openscience-linux-x64-baseline.tar.gz VS openscience-linux-x64.tar.gz
 // Apparently it's about microarchitectures in modern CPUs. Too specific to work on it for now.
 //

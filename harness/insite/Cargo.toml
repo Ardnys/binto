@@ -1,0 +1,25 @@
+[package]
+name = "insite"
+version = "0.1.0"
+description = "a tui to inspect how binto's matcher matches the assets"
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+
+[dependencies]
+crossterm = "0.29.0"
+ratatui = "0.30.2"
+color-eyre = "0.6.5"
+serde.workspace = true
+serde_json.workspace = true
+binto-contract.workspace = true
+
+
+# # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
+# [profile.release]
+# codegen-units = 1
+# lto = true
+# opt-level = "s"
+# strip = true

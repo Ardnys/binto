@@ -217,6 +217,40 @@ impl TraceEvent {
     }
 }
 
+// ------------ Binto Harness Shared Types -----------------
+// Output of `runner` is used by `insite`, thus the output of runner becomes part of the `binto-contract`
+
+/// One stderr line: a decision event, or the raw text if it wasn't binto's JSON log
+/// (a panic, for instance) so nothing is silently dropped.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TraceLine {
+    Event(TraceEvent),
+    Raw { raw: String },
+}
+
+/// One line of the results file: everything `binto match` returned for one repo.
+#[derive(Serialize, Deserialize)]
+pub struct RunRecord {
+    pub repo: String,
+    pub tag: Option<String>,
+    pub arch: String,
+    pub libc: String,
+    pub n_assets: usize,
+    /// `auto_selected` / `needs_interaction` / `no_match`, or `error`.
+    pub outcome: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u128,
+    /// binto's stdout verdict (absent when it could not be parsed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<MatchVerdict>,
+    /// Every stderr decision event.
+    pub trace: Vec<TraceLine>,
+    /// Diagnostic detail, only when `outcome` is `error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// The `message` of each decision point, so analysis code matches on a constant instead of
 /// a string literal copied out of the matcher.
 pub mod messages {
