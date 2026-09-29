@@ -19,7 +19,9 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-use binto_contract::{Asset, MatchVerdict, Outcome, TraceEvent, env as binto_env};
+use binto_contract::{
+    Asset, MatchVerdict, Outcome, RunRecord, TraceEvent, TraceLine, env as binto_env,
+};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
@@ -73,15 +75,6 @@ struct DatasetEntry {
     assets: Vec<Asset>,
 }
 
-/// One stderr line: a decision event, or the raw text if it wasn't binto's JSON log
-/// (a panic, for instance) so nothing is silently dropped.
-#[derive(Serialize)]
-#[serde(untagged)]
-enum TraceLine {
-    Event(TraceEvent),
-    Raw { raw: String },
-}
-
 /// What the runner concluded about a single invocation.
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,28 +93,6 @@ impl RunOutcome {
             RunOutcome::Error => "error".to_string(),
         }
     }
-}
-
-/// One line of the results file: everything `binto match` returned for one repo.
-#[derive(Serialize)]
-struct RunRecord<'a> {
-    repo: &'a str,
-    tag: Option<&'a str>,
-    arch: &'a str,
-    libc: &'a str,
-    n_assets: usize,
-    /// `auto_selected` / `needs_interaction` / `no_match`, or `error`.
-    outcome: String,
-    exit_code: Option<i32>,
-    duration_ms: u128,
-    /// binto's stdout verdict (absent when it could not be parsed).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verdict: Option<MatchVerdict>,
-    /// Every stderr decision event.
-    trace: Vec<TraceLine>,
-    /// Diagnostic detail, only when `outcome` is `error`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
 }
 
 struct Output {
@@ -287,10 +258,10 @@ fn main() -> Result<()> {
         let label = run_outcome.label();
 
         let record = RunRecord {
-            repo: &entry.repo,
-            tag: entry.tag.as_deref(),
-            arch: &cli.arch,
-            libc: &cli.libc,
+            repo: entry.repo.clone(),
+            tag: entry.tag,
+            arch: cli.arch.clone(),
+            libc: cli.libc.clone(),
             n_assets: entry.assets.len(),
             outcome: label.clone(),
             exit_code: output.status_code,
