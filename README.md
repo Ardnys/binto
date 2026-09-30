@@ -4,7 +4,7 @@ A user-land binary package manager for GitHub releases. Install, track, and upda
 
 > The name `binto` is derived from both Italian cheese **Bitto Storico** and Japanese lunch **Bentō** (弁当). If that sounds kind of random, you bet your boots it is. All simple and obvious names like ghr, bin, gbin or anything related to GitHub and binaries were taken. I was frustrated trying to find a nice and meaningful name, and at last I thought "I am gonna name it after cheese then" so I started looking up cheese names and **bitto** sounded nice and I converted it to **binto**, which made it similar to **bentō**, arguably more related to package management than cheese. And thus my 2 favorite cuisines found their way into here.
 
-```
+```shell
 binto install BurntSushi/ripgrep
 binto install https://github.com/sharkdp/bat
 binto update --all
@@ -156,6 +156,40 @@ notify = "terminal"         # "terminal" | "desktop" | "none"
 
 ---
 
+
+## Manifest
+
+`~/.config/binto/manifest.toml` is a declarative, portable list of the tools binto manages. It is intended to be committed it to your dotfiles  and replay it on another machine to get the same setup.
+
+`binto install`, `binto remove`, and `binto adopt` keep it in sync automatically. You can also hand-edit it, and your edits survive: binto rewrites only the one entry it's changing, so **comments, ordering, blank lines, and commented-out entries are preserved** across automatic updates.
+
+Each repo is a key under `[tools]`. Its value is either a tag string (`"latest"` tracks the newest release, anything else pins to that tag) or a table with `tag` and/or `alias`:
+
+```toml
+# You can add this to your dotfiles
+[tools]
+"sharkdp/bat" = "latest"
+"cli/cli" = "v2.45.0"                 # pinned to a specific release tag
+"BurntSushi/ripgrep" = { alias = "rg" }   # install/track the binary under this name
+
+# comment an entry out to keep it around without syncing it
+# "junegunn/fzf" = "latest"
+
+# a repo shipping several binaries lists them under `binaries`
+[tools."ozwaldorf/lutgen-rs".binaries]
+lutgen-cli = "latest"
+lutgen-studio = { tag = "lutgen-studio-v0.3.0", alias = "lutgen-gui" }
+```
+
+Binaries of a multi-binary repo are named by the stem read from the asset name (for example `lutgen-cli` from `lutgen-cli-v1.1.1-x86_64-unknown-linux-gnu`), and binto only writes `binaries` when the release actually ships more than one. Once `binaries` is present, `tag` and `alias` are read per binary only; a repo-level `tag`/`alias` next to it is ignored. A pin applies to one binary, not the whole repo: pinning `lutgen-studio` leaves `lutgen-cli` tracking latest, and `binto remove` drops only the binary you remove (the repo entry goes with its last binary).
+
+Comment out an entry to disable it without losing it: `binto sync` (and `--prune`) ignore commented-out tools. An inline comment on a tag you later re-pin via binto is kept too.
+
+Run `binto sync` to install everything in the manifest that isn't installed yet. A tag both selects the version `sync` installs and locks the tool so `binto update` skips it. `binto sync --prune` removes installed tools the manifest no longer lists.
+
+--- 
+
+
 ## Logging
 
 Every run writes a detailed, rotating log to `~/.local/share/binto/logs/` (daily files, the last 7 kept). The install pipeline is instrumented with spans, so a failed install is traceable to the exact phase. 
@@ -189,37 +223,13 @@ If the top candidate's score is sufficiently ahead of the second, it is selected
 | Path | Purpose |
 |------|---------|
 | `~/.config/binto/config.toml` | User configuration |
-| `~/.config/binto/manifest.toml` | Declarative, portable list of managed tools (repo + optional pinned tag) |
+| `~/.config/binto/manifest.toml` | Declarative, portable list of managed tools (repo, optional pinned tag / alias, per-binary for multi-binary repos) |
 | `~/.local/share/binto/state.toml` | Installed tools, versions, checksums, ETags |
 | `~/.local/share/binto/logs/` | Rotating debug logs (one per day, last 7 kept) |
 | `~/.cache/binto/` | Download cache (cleaned after each install; `binto clean` clears any leftovers) |
 
 ---
 
-## Manifest
-
-`~/.config/binto/manifest.toml` is a declarative, portable list of the tools binto manages. It contains only essential informations about tools and preferences, so you can commit it to your dotfiles and replay it on another machine to get the same setup.
-
-`binto install`, `binto remove`, and `binto adopt` keep it in sync automatically. You can also hand-edit it, and your edits survive: binto rewrites only the one entry it's changing, so **comments, ordering, blank lines, and commented-out entries are preserved** across automatic updates.
-
-```toml
-# You can add this to your dotfiles
-[[tools]]
-repo = "BurntSushi/ripgrep"
-alias = "rg"         # optionally install/track the binary under this name
-
-[[tools]]
-repo = "sharkdp/bat"
-tag = "v0.24.0"      # optionally pin a tool to a specific release tag
-
-# comment a block out to keep it around without syncing it
-# [[tools]]
-# repo = "junegunn/fzf"
-```
-
-Comment out a whole `[[tools]]` block to disable an entry without losing it: `binto sync` (and `--prune`) ignore commented-out tools, and binto won't clobber the comment next time it edits the file. An inline comment on a `tag` you later re-pin via binto is kept too.
-
-Run `binto sync` to install everything in the manifest that isn't installed yet. A `tag` both selects the version `sync` installs and locks the tool so `binto update` skips it.
 
 ## Roadmap
 - [x] aliasing with -a / --alias, for ripgrep for example. should be persisted in manifest as well.
@@ -233,7 +243,8 @@ Run `binto sync` to install everything in the manifest that isn't installed yet.
   - [x] `manifest.toml` alongside config.toml, shows tools and repositories, optional version tags.
   - [x] `binto install` and `binto remove` keeps that file in sync automatically.
   - [x] `binto sync` installs everything in the manifest file that's missing in current state.
-- [ ] perhaps installing binaries to somewhere related to binto as default, so it's clear what's managed by binto and what is not
+- [x] perhaps installing binaries to somewhere related to binto as default, so it's clear what's managed by binto and what is not
+- [ ] parse SBOM files
 
 ## Contributing
 For feature requests and bug reports, please open an issue on GitHub.
