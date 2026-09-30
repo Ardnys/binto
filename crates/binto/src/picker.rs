@@ -5,7 +5,7 @@ use crate::config::Libc;
 use crate::github::types::{Asset, Release};
 use crate::installer::default_binary_name;
 use crate::matcher::rank::SelectionNote;
-use crate::matcher::{MatchOutput, distinct_stems, match_asset};
+use crate::matcher::{MatchOutput, PreviousChoice, distinct_stems, match_asset};
 use crate::output::{print_info, print_warning};
 
 // TODO: this could be an impl SelectionNote
@@ -35,13 +35,13 @@ pub struct SelectedAsset {
 /// Resolve a release to a single concrete asset for the current arch.
 ///
 /// Auto-selects when the matcher is confident; otherwise falls back to an interactive
-/// picker (or, when `assume_yes`, the top-scored candidate). `pattern` is the tool's stored
-/// `asset_pattern` for updates, or `None` for a fresh install. This is the single selection path
+/// picker (or, when `assume_yes`, the top-scored candidate). `previous` is the tool's stored
+/// `asset_pattern` and `stem` for updates, or `None` for a fresh install. This is the single selection path
 /// shared by install and both update flows.
 pub fn select_asset(
     release: &Release,
     user_arch: &str,
-    pattern: Option<&str>,
+    previous: Option<PreviousChoice>,
     repo: &str,
     prompt: &str,
     prefer_libc: Libc,
@@ -50,7 +50,7 @@ pub fn select_asset(
     let match_output = match_asset(
         release.assets.clone(),
         user_arch,
-        pattern,
+        previous,
         repo,
         &release.tag_name,
         prefer_libc,

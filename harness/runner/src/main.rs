@@ -12,7 +12,7 @@
 //! Output is a results JSONL (one record per repo) plus a human summary on stderr.
 
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -202,10 +202,22 @@ fn main() -> Result<()> {
         );
     }
 
-    let out_path = cli
-        .output
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(format!("results-{}-{}.jsonl", cli.arch, cli.libc)));
+    let dataset_filename = &cli
+        .dataset
+        .file_stem()
+        .map_or("results", |stem| stem.to_str().unwrap());
+
+    if cli.output.is_none() {
+        fs::create_dir_all("results")?;
+    }
+
+    let out_path = cli.output.clone().unwrap_or_else(|| {
+        let pb = PathBuf::from(format!(
+            "{}-{}-{}.jsonl",
+            dataset_filename, cli.arch, cli.libc
+        ));
+        PathBuf::from("results").join(pb)
+    });
 
     // Empty config dir => binto uses its built-in defaults; --arch/--libc pin the rest.
     let scratch_config = std::env::temp_dir().join("binto-runner-config");
@@ -214,6 +226,7 @@ fn main() -> Result<()> {
 
     let dataset = File::open(&cli.dataset)
         .with_context(|| format!("failed to open dataset {}", cli.dataset.display()))?;
+
     let mut out = BufWriter::new(
         File::create(&out_path)
             .with_context(|| format!("failed to create results file {}", out_path.display()))?,

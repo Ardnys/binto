@@ -48,7 +48,7 @@ cargo run -p runner -- --repo ripgrep -v
 | `-d`/`--dataset` | Dataset JSONL (default `harness/datasets/cli.jsonl`). |
 | `-b`/`--binto` | binto binary to test (default `target/release/binto`). |
 | `--arch`, `--libc` | Match target (default `x86_64` / `gnu`). |
-| `-o`/`--output` | Results path (default `results-<arch>-<libc>.jsonl`). |
+| `-o`/`--output` | Results path (default `<dataset-stem>-<arch>-<libc>.jsonl`). |
 | `--limit N` | Only run the first N repos. |
 | `--repo SUBSTR` | Only run repos whose `owner/repo` contains SUBSTR. |
 | `-v` | One progress line per repo. |

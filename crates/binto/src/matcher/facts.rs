@@ -471,9 +471,29 @@ impl AssetName {
         spans.extend(self.find_os().spans);
         spans.extend(self.find_libc().spans);
         spans.extend(self.extension_span());
-        spans.extend(tag.and_then(|tag| self.version_span(tag)));
+        spans.extend(tag.and_then(|tag| self.version_range(tag)));
 
         tidy_separators(&cut_spans(&self.lower, spans))
+    }
+
+    /// Where this asset states its own version, indexing the lowercased name.
+    ///
+    /// The tag's version when the name carries it. Otherwise a version token of the name's
+    /// own — a repo tagging per product (`lutgen-studio-v0.4.0`) also ships the latest build
+    /// of its other product (`lutgen-cli-v1.1.1-...`), whose version the tag never mentions.
+    /// A version written `name@1.2.3` takes its `@` with it, since `@` is not a separator.
+    pub fn version_range(&self, tag: &str) -> Option<Range<usize>> {
+        // A version glued to its neighbours is the least certain reading, so it comes last:
+        // tag `tool-v0.1.0` must not cut `0.1.0` out of a sibling's `v10.1.0`.
+        let span = self
+            .tag_version_token(tag)
+            .or_else(|| self.own_version_span())
+            .or_else(|| self.tag_version_substring(tag))?;
+        let at = span
+            .start
+            .checked_sub(1)
+            .filter(|&i| self.lower.as_bytes()[i] == b'@');
+        Some(at.unwrap_or(span.start)..span.end)
     }
 
     /// The named architecture wins the *fact* wherever the word size sits relative to it,
@@ -545,35 +565,162 @@ impl AssetName {
             .or_else(|| suffix_span(&self.lower, OS_FOREIGN_EXTENSIONS))
     }
 
-    /// Where this asset states its version, given the tag it shipped under.
+    /// Where this asset states its version as a token, given the tag it shipped under.
     ///
     /// A release tags `v2.45.0` and names the asset `gh_2.45.0_...`, or the reverse, so
     /// both spellings are tried. The bare-substring fallback catches a version glued to
     /// its neighbours, which no token search would find.
-    fn version_span(&self, tag: &str) -> Option<Range<usize>> {
-        // BUG: versions don't always follow the release tag for multiple binaries
-        // Take lutgen-cli release v1.0.1:
-        // it contains the new lutgen-cli v1.0.1 and THE LATEST lutgen-studio v0.3.0 because they are not released together.
-        // Then lutgen studio v0.4.0 release tag ships the latest cli and the new studio.
-        // Confusing
-        let tag = tag.trim().to_lowercase();
-        let version = version_of_tag(&tag);
-        let bare = version.trim_start_matches('v');
-        if bare.is_empty() {
-            return None;
-        }
-        let prefixed = format!("v{bare}");
-        let candidates = [version, bare, prefixed.as_str()];
-
-        candidates
+    fn tag_version_token(&self, tag: &str) -> Option<Range<usize>> {
+        tag_version_spellings(tag)?
             .iter()
             .find_map(|c| token_span(&self.lower, c))
-            .or_else(|| {
-                candidates
-                    .iter()
-                    .find_map(|c| self.lower.find(c).map(|start| start..start + c.len()))
-            })
     }
+
+    /// The tag's version glued to its neighbours (`tool1.2.3`), which no token search finds.
+    fn tag_version_substring(&self, tag: &str) -> Option<Range<usize>> {
+        tag_version_spellings(tag)?.iter().find_map(|c| {
+            self.lower
+                .find(c.as_str())
+                .map(|start| start..start + c.len())
+        })
+    }
+
+    /// The first version token the name states on its own, without a tag to confirm it.
+    ///
+    /// Deliberately strict, because a name is full of numbers that are not the release's
+    /// version: `ubuntu-22.04`, `python-3.11`, `darwin-10.12`. Only a full `x.y.z` (optionally
+    /// `v`-prefixed, optionally with a prerelease suffix) counts, it must follow the name
+    /// rather than lead it, and never directly after a word naming a platform or runtime.
+    fn own_version_span(&self) -> Option<Range<usize>> {
+        let bytes = self.lower.as_bytes();
+        (1..bytes.len())
+            .filter(|&i| is_version_boundary(bytes[i - 1]))
+            .filter(|&i| !follows_platform_word(&self.lower, i))
+            .find_map(|i| version_token_len(&self.lower[i..]).map(|len| i..i + len))
+    }
+}
+
+/// Every spelling of the tag's version an asset might use: a release tags `v2.45.0` and
+/// names the asset `gh_2.45.0_...`, or the reverse. `None` for a tag with no version.
+fn tag_version_spellings(tag: &str) -> Option<[String; 3]> {
+    let tag = tag.trim().to_lowercase();
+    let version = version_of_tag(&tag);
+    let bare = version.trim_start_matches('v');
+    if bare.is_empty() {
+        return None;
+    }
+    Some([version.to_string(), bare.to_string(), format!("v{bare}")])
+}
+
+/// Where a tag-less version may begin in an asset name. Not `.`, which sits *inside* a
+/// version — accepting it would read `3.11.4` from its second component onwards.
+fn is_version_boundary(b: u8) -> bool {
+    matches!(b, b'-' | b'_' | b'@' | b' ')
+}
+
+/// Words after which a version belongs to the platform or runtime, not to the binary.
+const PLATFORM_WORDS: &[&str] = &[
+    "alpine",
+    "android",
+    "centos",
+    "clang",
+    "cu",
+    "cuda",
+    "darwin",
+    "debian",
+    "el",
+    "fedora",
+    "gcc",
+    "glibc",
+    "gnu",
+    "go",
+    "golang",
+    "ios",
+    "java",
+    "jdk",
+    "jre",
+    "kernel",
+    "linux",
+    "llvm",
+    "lua",
+    "macos",
+    "manylinux",
+    "musl",
+    "nif",
+    "node",
+    "nodejs",
+    "openssl",
+    "osx",
+    "perl",
+    "php",
+    "py",
+    "python",
+    "qt",
+    "rhel",
+    "ruby",
+    "ubuntu",
+    "win",
+    "windows",
+];
+
+/// Whether the token just before `start` names a platform or runtime.
+fn follows_platform_word(name: &str, start: usize) -> bool {
+    let before = &name[..start - 1];
+    let word_start = before
+        .rfind(|c: char| c.is_ascii() && (is_sep(c as u8) || c == '@'))
+        .map_or(0, |i| i + 1);
+    PLATFORM_WORDS.contains(&&before[word_start..])
+}
+
+/// The length of the version token `s` opens with, if it opens with one: `v1.2.3`,
+/// `1.2.3-rc.1`. Fewer than three numeric components is not enough to tell a version from
+/// a distro or runtime release, so `22.04` is rejected.
+fn version_token_len(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let digits_from = |mut j: usize| {
+        while j < bytes.len() && bytes[j].is_ascii_digit() {
+            j += 1;
+        }
+        j
+    };
+
+    let mut j = usize::from(bytes.first() == Some(&b'v'));
+    let mut components = 0;
+    loop {
+        let end = digits_from(j);
+        if end == j {
+            return None;
+        }
+        components += 1;
+        j = end;
+        if bytes.get(j) == Some(&b'.') && bytes.get(j + 1).is_some_and(u8::is_ascii_digit) {
+            j += 1;
+        } else {
+            break;
+        }
+    }
+    if components < 3 {
+        return None;
+    }
+
+    // A prerelease suffix belongs to the version: `-rc.1`, `.beta2`, `_alpha1`, `alpha`.
+    let at_boundary = |k: usize| k == bytes.len() || is_sep(bytes[k]);
+    for sep in ["-", ".", "_", ""] {
+        for pre in ["alpha", "beta", "pre", "rc"] {
+            let Some(rest) = s[j..].strip_prefix(sep).and_then(|r| r.strip_prefix(pre)) else {
+                continue;
+            };
+            let mut k = s.len() - rest.len();
+            if bytes.get(k) == Some(&b'.') && bytes.get(k + 1).is_some_and(u8::is_ascii_digit) {
+                k += 1;
+            }
+            let k = digits_from(k);
+            if at_boundary(k) {
+                return Some(k);
+            }
+        }
+    }
+    at_boundary(j).then_some(j)
 }
 
 /// The version portion of a release tag.
@@ -1081,6 +1228,90 @@ mod tests {
         assert_eq!(version_of_tag("app-v1.2.3-beta.1"), "v1.2.3-beta.1");
         // Nothing version-shaped: the whole tag is the best a release has to offer.
         assert_eq!(version_of_tag("nightly"), "nightly");
+    }
+
+    /// A repo tagging per product ships each product's latest build in every release, so a
+    /// sibling's version appears nowhere in the tag. Every one of these is a real release
+    /// that left the version in the stem and installed `lutgen-cli-v1.1.1` as a name.
+    #[test]
+    fn a_version_the_tag_does_not_name_is_still_cut() {
+        for (name, tag, expected) in [
+            (
+                "lutgen-cli-v1.1.1-x86_64-unknown-linux-gnu",
+                "lutgen-studio-v0.4.0",
+                "lutgen-cli",
+            ),
+            (
+                "lutgen-studio-v0.3.0-x86_64-unknown-linux-gnu",
+                "lutgen-v1.0.1",
+                "lutgen-studio",
+            ),
+            ("gokapi-cli-1.1.3_linux-amd64.zip", "v2.2.4", "gokapi-cli"),
+            (
+                "chipmunk-cli@0.2.2-linux-portable.tgz",
+                "4.2.0",
+                "chipmunk-cli-portable",
+            ),
+            ("tool-2.0.0-rc.1-linux-amd64.tar.gz", "nightly", "tool"),
+            (
+                "paperoni_0.6.1_alpha1_x86_64.tar.gz",
+                "0.6.1-alpha1",
+                "paperoni",
+            ),
+        ] {
+            assert_eq!(AssetName::new(name).stem(Some(tag)), expected, "{name}");
+        }
+    }
+
+    /// `@` is not a separator, so the tag's own version written `name@x.y.z` must take the
+    /// `@` with it rather than leave `chipmunk@-portable`.
+    #[test]
+    fn a_version_after_an_at_sign_takes_the_at_sign() {
+        assert_eq!(
+            AssetName::new("chipmunk@4.2.0-linux-portable.tgz").stem(Some("4.2.0")),
+            "chipmunk-portable"
+        );
+    }
+
+    /// A tag-less version cut has only the name to go on, and names are full of numbers
+    /// that version something else. None of these is the binary's version.
+    #[test]
+    fn a_platform_or_short_version_is_not_mistaken_for_the_binarys() {
+        for (name, expected) in [
+            ("tool-ubuntu-22.04.1-amd64.tar.gz", "tool-ubuntu-22.04.1"),
+            (
+                "tool-python-3.11.4_linux_amd64.tar.gz",
+                "tool-python-3.11.4",
+            ),
+            ("tool-go-1.22.3-linux-amd64.tar.gz", "tool-go-1.22.3"),
+            // Two components cannot be told from a distro or runtime release.
+            ("wal-g-pg-24.04-amd64.tar.gz", "wal-g-pg-24.04"),
+            ("tool-php-8.2-nts-linux-amd64.tar.gz", "tool-php-8.2-nts"),
+        ] {
+            assert_eq!(
+                AssetName::new(name).stem(Some("v9.9.9")),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    /// A tag's version found only *inside* a longer number is not that asset's version.
+    #[test]
+    fn a_tag_version_inside_a_longer_version_is_not_cut() {
+        assert_eq!(
+            AssetName::new("other-v10.1.0-linux-amd64").stem(Some("tool-v0.1.0")),
+            "other"
+        );
+    }
+
+    /// When the tag's version is in the name, it is the only version cut.
+    #[test]
+    fn the_tag_version_wins_over_a_version_of_the_names_own() {
+        assert_eq!(
+            AssetName::new("tool-1.2.3-with-lib-4.5.6-linux-amd64.tar.gz").stem(Some("v1.2.3")),
+            "tool-with-lib-4.5.6"
+        );
     }
 
     /// Splitting the tag must not make version removal greedier — a tag absent from the

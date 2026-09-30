@@ -1,30 +1,47 @@
-// TODO: delete this file
-/// Generate a glob pattern from an asset name by replacing the version string with `*`.
+use glob::{MatchOptions, Pattern};
+
+use super::facts::AssetName;
+
+/// Generate a glob pattern from an asset name by replacing its version with `*`.
 /// E.g.: "gh_2.45.0_linux_amd64.tar.gz" with tag "v2.45.0" → "gh_*_linux_amd64.tar.gz"
+///
+/// Only the version is replaced, found the way the stem finds it. Replacing the whole tag
+/// took the binary's name with it whenever the tag carried one: `lutgen-studio-v0.4.0-...`
+/// became `*-x86_64-unknown-linux-gnu`, which matches `lutgen-cli` too. Lowercased, like the
+/// stem; [`match_pattern`] ignores case.
 pub fn asset_to_pattern(asset_name: &str, tag: &str) -> String {
-    let version = tag.trim_start_matches('v');
-    let with_v = asset_name.replace(tag, "*");
-    if with_v != asset_name {
-        return with_v;
+    let lower = asset_name.to_lowercase();
+    match AssetName::new(asset_name).version_range(tag) {
+        Some(span) => format!(
+            "{}*{}",
+            Pattern::escape(&lower[..span.start]),
+            Pattern::escape(&lower[span.end..])
+        ),
+        // No version to replace — the exact name is the pattern.
+        None => Pattern::escape(&lower),
     }
-    let without_v = asset_name.replace(version, "*");
-    if without_v != asset_name {
-        return without_v;
-    }
-    // No substitution possible — return the exact name as the pattern
-    asset_name.to_string()
 }
 
 /// Try to match a list of asset names against a stored glob pattern.
 /// Returns matching asset names.
 pub fn match_pattern<'a>(pattern: &str, asset_names: &[&'a str]) -> Vec<&'a str> {
-    let Ok(pat) = glob::Pattern::new(pattern) else {
+    let Ok(pat) = Pattern::new(pattern) else {
         tracing::debug!(pattern, "stored pattern is not a valid glob");
         return vec![];
     };
     let matched: Vec<&str> = asset_names
         .iter()
-        .filter(|name| pat.matches(name))
+        // `glob` folds only ASCII case; lowercasing the name covers a pattern written
+        // lowercase for an asset with a non-ASCII capital.
+        .filter(|name| {
+            pat.matches_with(
+                name,
+                MatchOptions {
+                    case_sensitive: false,
+                    ..MatchOptions::new()
+                },
+            ) || pat.matches(&name.to_lowercase())
+        })
         .copied()
         .collect();
     tracing::debug!(
@@ -60,5 +77,43 @@ mod tests {
         ];
         let matched = match_pattern(&p, &names);
         assert_eq!(matched, vec!["gh_2.50.0_linux_amd64.tar.gz"]);
+    }
+
+    /// A tag naming the binary must not take the name out of the pattern with it, or the
+    /// pattern matches every binary the release ships.
+    #[test]
+    fn a_name_prefixed_tag_keeps_the_name_in_the_pattern() {
+        let p = asset_to_pattern(
+            "lutgen-studio-v0.4.0-x86_64-unknown-linux-gnu",
+            "lutgen-studio-v0.4.0",
+        );
+        assert_eq!(p, "lutgen-studio-*-x86_64-unknown-linux-gnu");
+    }
+
+    /// A sibling binary's version is not in the tag, and a pattern keeping it literally
+    /// matches nothing in the next release.
+    #[test]
+    fn a_version_absent_from_the_tag_is_still_replaced() {
+        let p = asset_to_pattern(
+            "lutgen-cli-v1.1.1-x86_64-unknown-linux-gnu",
+            "lutgen-studio-v0.4.0",
+        );
+        assert_eq!(p, "lutgen-cli-*-x86_64-unknown-linux-gnu");
+        let next = [
+            "lutgen-cli-v1.2.0-x86_64-unknown-linux-gnu",
+            "lutgen-studio-v0.4.0-x86_64-unknown-linux-gnu",
+        ];
+        assert_eq!(
+            match_pattern(&p, &next),
+            vec!["lutgen-cli-v1.2.0-x86_64-unknown-linux-gnu"]
+        );
+    }
+
+    /// Patterns written before they were lowercased still match.
+    #[test]
+    fn matching_ignores_case() {
+        let names = ["Tool_1.2.0_Linux_x86_64.tar.gz"];
+        assert_eq!(match_pattern("Tool_*_Linux_x86_64.tar.gz", &names), names);
+        assert_eq!(match_pattern("tool_*_linux_x86_64.tar.gz", &names), names);
     }
 }

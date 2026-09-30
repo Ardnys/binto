@@ -6,6 +6,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::BintoError;
+use crate::matcher::PreviousChoice;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct State {
@@ -58,6 +59,14 @@ impl ToolEntry {
     /// "the one binary this repo ships", which is what a manifest row naming none asks for.
     pub fn binary(&self) -> Option<&str> {
         (!self.stem.is_empty()).then_some(self.stem.as_str())
+    }
+
+    /// What this entry was installed from, for an update to pick the same binary again.
+    pub fn previous_choice(&self) -> PreviousChoice<'_> {
+        PreviousChoice {
+            pattern: &self.asset_pattern,
+            stem: &self.stem,
+        }
     }
 
     /// Builder-style override of the cached ETag, used after a successful install so the

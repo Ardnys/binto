@@ -113,7 +113,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
                 let asset = select_asset(
                     &release,
                     &user_arch,
-                    Some(&entry.asset_pattern),
+                    Some(entry.previous_choice()),
                     &entry.repo,
                     &format!("Pick an asset for {name}"),
                     config.prefer_libc,
@@ -294,7 +294,7 @@ pub async fn cmd_update(
             let asset = select_asset(
                 &release,
                 &user_arch,
-                Some(&entry.asset_pattern),
+                Some(entry.previous_choice()),
                 &entry.repo,
                 "Pick an asset",
                 config.prefer_libc,
