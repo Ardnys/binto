@@ -6,6 +6,7 @@ use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::config::Config;
+use crate::error::is_interrupted;
 use crate::github::api::{ApiResponse, ConditionalResult, GithubClient};
 use crate::github::types::{Asset, Release};
 use crate::installer::download::download_span;
@@ -110,7 +111,9 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
                     release.tag_name
                 ));
 
-                let asset = select_asset(
+                // One tool without a usable asset must not abort the rest of the run. A Ctrl-C
+                // inside the picker still propagates, so the whole update stops.
+                let asset = match select_asset(
                     &release,
                     &user_arch,
                     Some(entry.previous_choice()),
@@ -118,8 +121,14 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
                     &format!("Pick an asset for {name}"),
                     config.prefer_libc,
                     false,
-                )?
-                .asset;
+                ) {
+                    Ok(selected) => selected.asset,
+                    Err(e) if is_interrupted(&e) => return Err(e),
+                    Err(e) => {
+                        print_warning(&format!("Skipping {name}: {e:#}"));
+                        continue;
+                    }
+                };
                 let install_dir = entry.install_dir(&config.install_dir).to_path_buf();
 
                 pending.push(PendingUpdate {
@@ -238,15 +247,15 @@ pub async fn cmd_update(
     // now, take me back to latest."
     let manifest = Manifest::load()?;
     let pinned_tag = manifest.is_pinned(&entry.repo, entry.binary());
-    if let Some(tag) = pinned_tag {
-        if !force {
-            print_info(&format!(
-                "{tool_name} is pinned to {tag}. \
-                 Re-run `binto update {tool_name} --force` to update it to the latest release \
-                 (this clears the pin)."
-            ));
-            return Ok(());
-        }
+    if let Some(tag) = pinned_tag
+        && !force
+    {
+        print_info(&format!(
+            "{tool_name} is pinned to {tag}. \
+             Re-run `binto update {tool_name} --force` to update it to the latest release \
+             (this clears the pin)."
+        ));
+        return Ok(());
     }
 
     let token = GithubClient::resolve_token(config.github_token.clone());

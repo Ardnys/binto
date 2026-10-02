@@ -33,7 +33,7 @@ use matcher::{MatchOutput, match_asset};
 use cli::{Cli, Commands};
 use config::Config;
 use config::Libc;
-use error::BintoError;
+use error::{BintoError, is_interrupted};
 use installer::checksum::find_checksum_asset;
 use output::{print_error, print_info, print_status, print_success, print_warning};
 use state::{State, ToolEntry};
@@ -115,15 +115,6 @@ fn main() -> ExitCode {
             ExitCode::from(130)
         }
     }
-}
-
-/// Whether `e` stems from the user hitting Ctrl-C inside an interactive prompt.
-fn is_interrupted(e: &anyhow::Error) -> bool {
-    e.chain().any(|cause| {
-        cause
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::Interrupted)
-    })
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -218,8 +209,7 @@ fn maybe_print_stale_banner(config: &Config) {
     }
 }
 
-/// Build a verdict [`Candidate`] from a ranked asset. The type itself lives in
-/// `binto-contract` because the harness deserializes it.
+/// Build a verdict [`Candidate`] from a ranked asset.
 fn candidate_of(r: &RankedAsset, notes: &[SelectionNote]) -> Candidate {
     let [(_, arch), (_, os), (_, libc), (_, format)] = r.labels();
     Candidate {
