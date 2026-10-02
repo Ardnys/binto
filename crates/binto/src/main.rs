@@ -21,6 +21,7 @@ mod update;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use binto_contract::{Candidate, MatchInput, MatchVerdict, Outcome};
@@ -80,36 +81,49 @@ fn parse_repo(input: &str) -> Result<String> {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    install_ctrlc_handler();
-
-    // Parse before any async/spawn so logging is live for the whole run. The worker guard must
-    // outlive every log call — hold it here until the process exits, or the file log truncates.
+fn main() -> ExitCode {
     let cli = Cli::parse();
     let _log_guard = logging::init(cli.verbose, cli.quiet);
 
-    if let Err(e) = run(cli).await {
-        print_error(&e);
-        std::process::exit(1);
+    let runtime = tokio::runtime::Runtime::new().expect("failed to start the tokio runtime");
+    // Ctrl-C drops the `run` future instead of exiting the process, so destructors (temp-file
+    // guards, locks) run. `biased` polls `ctrl_c` first, registering the handler before `run`
+    // does any work.
+    let outcome = runtime.block_on(async {
+        tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => None,
+            res = run(cli) => Some(res),
+        }
+    });
+    // Dropping the runtime drops the tasks still in flight (e.g. `update --all` downloads),
+    // running their guards too.
+    drop(runtime);
+
+    match outcome {
+        Some(Ok(())) => ExitCode::SUCCESS,
+        Some(Err(e)) if !is_interrupted(&e) => {
+            print_error(&e);
+            ExitCode::FAILURE
+        }
+        // Interactive prompts (dialoguer) hide the cursor and only restore it on Enter/Escape.
+        // A Ctrl-C inside one makes console return an `Interrupted` error (after raising SIGINT,
+        // which the tokio handler absorbs), so `run` usually finishes before `ctrl_c` is seen.
+        _ => {
+            let _ = console::Term::stderr().show_cursor();
+            let _ = console::Term::stdout().show_cursor();
+            ExitCode::from(130)
+        }
     }
 }
 
-// TODO: move this out of main.rs
-/// Restore the terminal cursor on Ctrl-C.
-///
-/// Interactive prompts (dialoguer's release/asset pickers) hide the cursor while open and
-/// only restore it on Enter/Escape. console reads Ctrl-C in raw mode and re-raises SIGINT to
-/// us, which the default handler turns into an immediate exit — *before* dialoguer can show
-/// the cursor again, leaving the terminal with an invisible cursor until `reset`. This
-/// handler runs on its own thread (so terminal I/O + exit are safe), shows the cursor, and
-/// exits with the conventional 130 (128 + SIGINT).
-fn install_ctrlc_handler() {
-    let _ = ctrlc::set_handler(|| {
-        let _ = console::Term::stderr().show_cursor();
-        let _ = console::Term::stdout().show_cursor();
-        std::process::exit(130);
-    });
+/// Whether `e` stems from the user hitting Ctrl-C inside an interactive prompt.
+fn is_interrupted(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::Interrupted)
+    })
 }
 
 async fn run(cli: Cli) -> Result<()> {

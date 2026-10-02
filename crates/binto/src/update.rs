@@ -449,6 +449,7 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
 
     // Exit 1 if updates available (useful for scripting)
     if any_updates {
+        // it's alright because no resource leak
         std::process::exit(1);
     }
 

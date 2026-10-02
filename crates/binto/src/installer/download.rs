@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
@@ -45,16 +45,10 @@ pub fn download_span(name: &str, total: u64) -> Span {
 /// Stream an asset to the cache, updating the *current* span's progress bar as bytes arrive.
 /// Must run inside a [`download_span`] (the concurrent loops `.instrument()` it; single installs
 /// go through `InstallSpec::run`).
-pub async fn download_to_cache(
-    client: &reqwest::Client,
-    url: &str,
-    filename: &str,
-) -> Result<PathBuf> {
+pub async fn download_to_cache(client: &reqwest::Client, url: &str, dest: &Path) -> Result<()> {
     let dir = cache_dir();
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create cache dir {}", dir.display()))?;
-
-    let dest = dir.join(filename);
 
     let resp = client
         .get(url)
@@ -70,9 +64,9 @@ pub async fn download_to_cache(
     if let Some(len) = resp.content_length() {
         span.pb_set_length(len);
     }
-    tracing::debug!(filename, "streaming asset to cache");
+    tracing::debug!(dest = %dest.display(), "streaming asset to cache");
 
-    let mut file = tokio::fs::File::create(&dest)
+    let mut file = tokio::fs::File::create(dest)
         .await
         .with_context(|| format!("failed to create {}", dest.display()))?;
 
@@ -89,5 +83,5 @@ pub async fn download_to_cache(
     }
 
     tracing::debug!(bytes = downloaded, "download complete");
-    Ok(dest)
+    Ok(())
 }

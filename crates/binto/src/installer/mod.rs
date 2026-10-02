@@ -81,11 +81,13 @@ impl Downloaded {
     ) -> Result<Downloaded> {
         let mut guard = InstallGuard::new();
 
-        let asset_path =
-            download::download_to_cache(client, &asset.browser_download_url, &asset.name)
-                .await
-                .with_context(|| format!("failed to download {}", asset.name))?;
+        // Track before streaming: a Ctrl-C drops this future mid-download, and the guard must
+        // remove the partial file.
+        let asset_path = download::cache_dir().join(&asset.name);
         guard.track_file(asset_path.clone());
+        download::download_to_cache(client, &asset.browser_download_url, &asset_path)
+            .await
+            .with_context(|| format!("failed to download {}", asset.name))?;
 
         let installed_sha256 =
             if let Some(chk_asset) = checksum::find_checksum_asset(&asset.name, all_assets) {
