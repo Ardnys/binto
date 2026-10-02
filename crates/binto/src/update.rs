@@ -247,11 +247,6 @@ pub async fn cmd_update(
             ));
             return Ok(());
         }
-
-        Manifest::set_tag_and_save(&entry.repo, entry.binary(), None)?;
-        print_info(&format!(
-            "Cleared pin on {tool_name} (was {tag}); updating to the latest release."
-        ));
     }
 
     let token = GithubClient::resolve_token(config.github_token.clone());
@@ -318,6 +313,14 @@ pub async fn cmd_update(
                 "{tool_name} updated to {} → {}",
                 entry.installed_tag, release.tag_name
             ));
+
+            if force {
+                Manifest::set_tag_and_save(&entry.repo, entry.binary(), None)?;
+                print_info(&format!(
+                    "Cleared pin on {tool_name} (was {}); updating to the latest release.",
+                    release.tag_name
+                ));
+            }
         }
         Err(e) => {
             print_warning(&format!("Failed to check {tool_name}: {e:#}"));
