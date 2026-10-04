@@ -38,7 +38,7 @@ fn print_up_to_date(name: &str, tag: &str) {
 /// Concurrent update for all tools: fan-out API checks → sequential asset selection
 /// → concurrent downloads → sequential extract+install.
 pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
-    let mut state = State::load()?;
+    let state = State::load()?;
 
     if state.is_empty() {
         print_info("No tools managed by binto. Run `binto install <owner/repo>` to get started.");
@@ -91,13 +91,13 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         match result {
             Ok(ConditionalResult::NotModified) => {
                 print_up_to_date(&name, &entry.installed_tag);
-                state.touch_checked(&name);
+                State::mutate(|s| s.touch_checked(&name))?;
             }
             Ok(ConditionalResult::Changed(ApiResponse {
                 data: release,
                 etag: new_etag,
             })) => {
-                state.touch_checked(&name);
+                State::mutate(|s| s.touch_checked(&name))?;
 
                 if !entry.is_behind(release.published_at) {
                     print_up_to_date(&name, &entry.installed_tag);
@@ -198,7 +198,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         }
         match builder.build().install(dl) {
             Ok(ir) => {
-                state.upsert(ir.tool_entry.with_etag(p.new_etag));
+                State::mutate(|s| s.upsert(ir.tool_entry.with_etag(p.new_etag)))?;
                 print_success(&format!(
                     "{}: {} → {}",
                     p.name, p.entry.installed_tag, p.release.tag_name
@@ -231,7 +231,7 @@ pub async fn cmd_update(
         return cmd_update_concurrent(config).await;
     }
 
-    let mut state = State::load()?;
+    let state = State::load()?;
 
     if state.is_empty() {
         print_info("No tools managed by binto. Run `binto install <owner/repo>` to get started.");
@@ -272,13 +272,13 @@ pub async fn cmd_update(
             print_success(&format!(
                 "{tool_name} is already up to date (304 Not Modified)."
             ));
-            state.touch_checked(&tool_name);
+            State::mutate(|s| s.touch_checked(&tool_name))?;
         }
         Ok(ConditionalResult::Changed(ApiResponse {
             data: release,
             etag: new_etag,
         })) => {
-            state.touch_checked(&tool_name);
+            State::mutate(|s| s.touch_checked(&tool_name))?;
 
             if !entry.is_behind(release.published_at) {
                 print_success(&format!(
@@ -317,7 +317,7 @@ pub async fn cmd_update(
             }
             let result = builder.build().run(client.http_client()).await?;
 
-            state.upsert(result.tool_entry.with_etag(new_etag));
+            State::mutate(|s| s.upsert(result.tool_entry.with_etag(new_etag)))?;
             print_success(&format!(
                 "{tool_name} updated to {} → {}",
                 entry.installed_tag, release.tag_name
@@ -341,7 +341,7 @@ pub async fn cmd_update(
 }
 
 pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
-    let mut state = State::load()?;
+    let state = State::load()?;
     let manifest = Manifest::load()?;
 
     if state.is_empty() {
@@ -401,7 +401,7 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
     api_results.sort_by(|a, b| a.0.cmp(&b.0));
 
     for (name, entry, result) in api_results {
-        state.touch_checked(&name);
+        State::mutate(|s| s.touch_checked(&name))?;
 
         match result {
             Ok(ConditionalResult::NotModified) => {
