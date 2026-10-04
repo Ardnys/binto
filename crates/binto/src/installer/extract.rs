@@ -2,32 +2,74 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+/// The first of the listed `ArchiveKind` variants whose extension `name` ends with, checked
+/// in the order given.
+macro_rules! first_extension_of {
+    ($name:expr, [$($kind:ident),+ $(,)?]) => {{
+        let name: &str = $name;
+        $(
+            if name.ends_with(ArchiveKind::$kind.extension()) {
+                return Some(ArchiveKind::$kind);
+            }
+        )+
+        None
+    }};
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
+    TarGz,
+    Tgz,
+    TarXz,
+    TarBz2,
+    Zip,
+}
+
+impl ArchiveKind {
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::TarGz => ".tar.gz",
+            Self::Tgz => ".tgz",
+            Self::TarXz => ".tar.xz",
+            Self::TarBz2 => ".tar.bz2",
+            Self::Zip => ".zip",
+        }
+    }
+
+    /// `name` must be lowercase
+    pub fn from_filename(name: &str) -> Option<Self> {
+        // Checked in the order listed: a longer extension must come before any shorter one it
+        // ends with (`.tar.gz` before a bare `.gz`).
+        first_extension_of!(name, [TarGz, Tgz, TarXz, TarBz2, Zip])
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            ArchiveKind::TarGz | ArchiveKind::Tgz | ArchiveKind::TarXz | ArchiveKind::TarBz2 => {
+                "tar"
+            }
+            ArchiveKind::Zip => "zip",
+        }
+    }
+    pub fn extract(self, path: &Path, dest: &Path) -> Result<()> {
+        match self {
+            ArchiveKind::TarGz | ArchiveKind::Tgz => extract_tar_gz(path, dest),
+            ArchiveKind::TarXz => extract_tar_xz(path, dest),
+            ArchiveKind::TarBz2 => extract_tar_bz2(path, dest),
+            ArchiveKind::Zip => extract_zip(path, dest),
+        }
+    }
+}
+
 #[tracing::instrument(skip(dest_dir), fields(archive = %archive_path.display()), err(level = "debug"))]
-pub fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<()> {
+pub fn extract_archive(
+    archive_kind: ArchiveKind,
+    archive_path: &Path,
+    dest_dir: &Path,
+) -> Result<()> {
     std::fs::create_dir_all(dest_dir)
         .with_context(|| format!("failed to create {}", dest_dir.display()))?;
 
-    let name = archive_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-        extract_tar_gz(archive_path, dest_dir)
-    } else if name.ends_with(".tar.xz") {
-        extract_tar_xz(archive_path, dest_dir)
-    } else if name.ends_with(".tar.bz2") {
-        extract_tar_bz2(archive_path, dest_dir)
-    } else if name.ends_with(".zip") {
-        extract_zip(archive_path, dest_dir)
-    } else {
-        // Not an archive — treat as a raw binary, copy it to dest_dir
-        let dest = dest_dir.join(archive_path.file_name().unwrap());
-        std::fs::copy(archive_path, &dest)
-            .with_context(|| format!("failed to copy raw binary to {}", dest.display()))?;
-        Ok(())
-    }
+    archive_kind.extract(archive_path, dest_dir)
 }
 
 fn extract_tar_gz(path: &Path, dest: &Path) -> Result<()> {
@@ -175,9 +217,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let archive_path = tmp.path().join("tool.tar.gz");
         let extract_dir = tmp.path().join("extract");
+        let archive_kind = ArchiveKind::from_filename(archive_path.to_str().unwrap()).unwrap();
 
         std::fs::write(&archive_path, make_tar_gz_with_elf("mytool")).unwrap();
-        extract_archive(&archive_path, &extract_dir).unwrap();
+        extract_archive(archive_kind, &archive_path, &extract_dir).unwrap();
 
         let result = find_binary(&extract_dir, "mytool").unwrap();
         assert!(matches!(result, BinarySearchResult::Found(_)));
@@ -188,9 +231,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let archive_path = tmp.path().join("tool.tar.gz");
         let extract_dir = tmp.path().join("extract");
+        let archive_kind = ArchiveKind::from_filename(archive_path.to_str().unwrap()).unwrap();
 
         std::fs::write(&archive_path, make_tar_gz_elf_no_exec("mytool")).unwrap();
-        extract_archive(&archive_path, &extract_dir).unwrap();
+        extract_archive(archive_kind, &archive_path, &extract_dir).unwrap();
 
         // Must still find it even without executable bit
         let result = find_binary(&extract_dir, "mytool").unwrap();
@@ -202,6 +246,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let archive_path = tmp.path().join("tool.tar.gz");
         let extract_dir = tmp.path().join("extract");
+        let archive_kind = ArchiveKind::from_filename(archive_path.to_str().unwrap()).unwrap();
 
         // Write a tar.gz with a plain text file
         let mut buf = Vec::new();
@@ -218,7 +263,7 @@ mod tests {
             ar.finish().unwrap();
         }
         std::fs::write(&archive_path, buf).unwrap();
-        extract_archive(&archive_path, &extract_dir).unwrap();
+        extract_archive(archive_kind, &archive_path, &extract_dir).unwrap();
 
         let result = find_binary(&extract_dir, "mytool").unwrap();
         assert!(matches!(result, BinarySearchResult::NotFound));

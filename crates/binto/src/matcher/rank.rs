@@ -12,6 +12,7 @@
 use tracing::debug;
 
 use crate::config::Libc;
+use crate::installer::extract::ArchiveKind;
 use crate::matcher::facts::{ArchFact, Format, LibcFact, OsFact};
 use crate::matcher::filter::Candidate;
 
@@ -32,10 +33,22 @@ impl PreferenceProfile {
     ///
     /// Formats: tarballs first (they carry the executable bit and usually the man pages
     /// and completions too), then zip, then a bare binary, then AppImage.
+    /// # Note about ordering of `format_order` Vec
+    /// `Format` enum now uses `ArchiveKind` enum, and adding each archives one by one
+    /// implies a preference order between archives. So, TarGz is preferred to TarXz
+    /// when both are present.
     pub fn new(libc: Libc) -> Self {
         Self {
             libc,
-            format_order: vec![Format::Tar, Format::Zip, Format::Raw, Format::AppImage],
+            format_order: vec![
+                Format::Archive(ArchiveKind::TarGz),
+                Format::Archive(ArchiveKind::Tgz),
+                Format::Archive(ArchiveKind::TarXz),
+                Format::Archive(ArchiveKind::TarBz2),
+                Format::Archive(ArchiveKind::Zip),
+                Format::Raw,
+                Format::AppImage,
+            ],
         }
     }
 }

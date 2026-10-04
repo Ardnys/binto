@@ -11,6 +11,7 @@ use tracing::Instrument;
 
 use crate::error::BintoError;
 use crate::github::types::{Asset, Release};
+use crate::installer::extract::ArchiveKind;
 use crate::matcher::facts::AssetName;
 use crate::matcher::pattern::asset_to_pattern;
 use crate::output::print_info;
@@ -208,27 +209,15 @@ impl InstallSpec<'_> {
     /// build the resulting `ToolEntry`. Sequential — may show the interactive binary picker.
     #[tracing::instrument(skip_all, fields(repo = %self.repo, install_name = %self.install_name))]
     pub fn install(&self, mut dl: Downloaded) -> Result<InstallResult> {
-        // Detect archive by filename extension first; fall back to content_type for assets
-        // with no extension.
         let asset_lower = self.asset.name.to_lowercase();
-        let ct = self.asset.content_type.to_lowercase();
-        let is_archive = asset_lower.ends_with(".tar.gz")
-            || asset_lower.ends_with(".tgz")
-            || asset_lower.ends_with(".tar.xz")
-            || asset_lower.ends_with(".tar.bz2")
-            || asset_lower.ends_with(".zip")
-            || ct.contains("gzip")
-            || ct.contains("x-tar")
-            || ct.contains("x-xz")
-            || ct.contains("x-bzip2")
-            || ct == "application/zip";
+        let kind = ArchiveKind::from_filename(&asset_lower);
 
-        let binary_src = if is_archive {
+        let binary_src = if let Some(archive) = kind {
             let extract_dir = download::cache_dir().join(format!("{}-extract", self.asset.name));
             dl.guard.track_dir(extract_dir.clone());
 
             print_info("Extracting archive...");
-            extract::extract_archive(&dl.asset_path, &extract_dir)?;
+            extract::extract_archive(archive, &dl.asset_path, &extract_dir)?;
 
             // Locate binary inside the extracted tree
             match find_binary(&extract_dir, &self.find_name)? {

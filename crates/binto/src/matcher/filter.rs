@@ -140,6 +140,8 @@ pub fn apply_hard_filters(
 
 #[cfg(test)]
 mod tests {
+    use crate::installer::extract::ArchiveKind;
+
     use super::*;
 
     fn asset(name: &str) -> Asset {
@@ -265,7 +267,7 @@ mod tests {
         assert_eq!(c.os, OsFact::Linux);
         assert_eq!(c.arch, ArchFact::Named("x86_64"));
         assert_eq!(c.libc, LibcFact::Musl);
-        assert_eq!(c.format, Format::Tar);
+        assert_eq!(c.format, Format::Archive(ArchiveKind::TarGz));
     }
 
     /// The tag only sharpens the stem — it must never change which assets survive.
