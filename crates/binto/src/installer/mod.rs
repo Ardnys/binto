@@ -2,21 +2,22 @@ pub mod binary;
 pub mod checksum;
 pub mod download;
 pub mod extract;
+pub mod reporter;
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use tracing::Instrument;
 
 use crate::error::BintoError;
 use crate::github::types::{Asset, Release};
 use crate::installer::extract::ArchiveKind;
 use crate::matcher::facts::AssetName;
 use crate::matcher::pattern::asset_to_pattern;
-use crate::output::print_info;
+use crate::output::{print_info, print_warning};
 use crate::state::ToolEntry;
 use extract::{BinarySearchResult, find_binary};
+use reporter::{Prompter, Reporter};
 
 /// RAII guard that removes temp files on drop.
 struct InstallGuard {
@@ -75,10 +76,13 @@ impl Downloaded {
     /// the `update --all` fan-out clones the asset into each task and calls this directly,
     /// since a borrowing `InstallSpec` method can't satisfy the `'static` bound on spawned
     /// futures. Sequential callers go through `InstallSpec::download`.
+    #[tracing::instrument(name = "download", skip_all, fields(name = %name))]
     pub async fn fetch(
         client: &reqwest::Client,
         asset: &Asset,
         all_assets: &[Asset],
+        reporter: &dyn Reporter,
+        name: &str,
     ) -> Result<Downloaded> {
         let mut guard = InstallGuard::new();
 
@@ -86,9 +90,16 @@ impl Downloaded {
         // remove the partial file.
         let asset_path = download::cache_dir().join(&asset.name);
         guard.track_file(asset_path.clone());
-        download::download_to_cache(client, &asset.browser_download_url, &asset_path)
-            .await
-            .with_context(|| format!("failed to download {}", asset.name))?;
+        download::download_to_cache(
+            client,
+            &asset.browser_download_url,
+            &asset_path,
+            reporter,
+            name,
+            asset.size,
+        )
+        .await
+        .with_context(|| format!("failed to download {}", asset.name))?;
 
         let installed_sha256 =
             if let Some(chk_asset) = checksum::find_checksum_asset(&asset.name, all_assets) {
@@ -199,16 +210,26 @@ impl<'a> InstallSpecBuilder<'a> {
 
 impl InstallSpec<'_> {
     /// Download + verify. Thin wrapper over [`Downloaded::fetch`] for sequential callers; the
-    /// concurrent updater calls `Downloaded::fetch` directly. Run this inside a
-    /// [`download::download_span`] so the byte-progress bar renders (see [`InstallSpec::run`]).
-    pub async fn download(&self, client: &reqwest::Client) -> Result<Downloaded> {
-        Downloaded::fetch(client, self.asset, &self.release.assets).await
+    /// concurrent updater calls `Downloaded::fetch` directly.
+    pub async fn download(
+        &self,
+        client: &reqwest::Client,
+        reporter: &dyn Reporter,
+    ) -> Result<Downloaded> {
+        Downloaded::fetch(
+            client,
+            self.asset,
+            &self.release.assets,
+            reporter,
+            &self.install_name,
+        )
+        .await
     }
 
     /// Extract (or treat as a raw binary), locate the binary, atomic-install it, and
     /// build the resulting `ToolEntry`. Sequential — may show the interactive binary picker.
     #[tracing::instrument(skip_all, fields(repo = %self.repo, install_name = %self.install_name))]
-    pub fn install(&self, mut dl: Downloaded) -> Result<InstallResult> {
+    pub fn install(&self, mut dl: Downloaded, prompter: &dyn Prompter) -> Result<InstallResult> {
         let asset_lower = self.asset.name.to_lowercase();
         let kind = ArchiveKind::from_filename(&asset_lower);
 
@@ -226,15 +247,7 @@ impl InstallSpec<'_> {
                     p
                 }
                 BinarySearchResult::Multiple(candidates) => {
-                    let names: Vec<String> =
-                        candidates.iter().map(|p| p.display().to_string()).collect();
-                    let selection = dialoguer::Select::new()
-                        .with_prompt("Multiple binaries found — pick one")
-                        .items(&names)
-                        .default(0)
-                        .interact()
-                        .context("failed to show binary picker")?;
-                    candidates.into_iter().nth(selection).unwrap()
+                    self.pick_binary(candidates, prompter)?
                 }
                 BinarySearchResult::NotFound => {
                     return Err(BintoError::BinaryNotFoundInArchive.into());
@@ -274,12 +287,49 @@ impl InstallSpec<'_> {
         })
     }
 
+    /// Choose among several executables found in the archive. Without a person to ask, take
+    /// the one named like the tool (`fd-helper` over `debug` for `fd`), else the first, and
+    /// say which.
+    fn pick_binary(
+        &self,
+        mut candidates: Vec<PathBuf>,
+        prompter: &dyn Prompter,
+    ) -> Result<PathBuf> {
+        let idx = if prompter.interactive() {
+            let names: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
+            prompter
+                .select("Multiple binaries found — pick one", &names)
+                .context("failed to show binary picker")?
+        } else {
+            candidates
+                .iter()
+                .position(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with(&self.find_name))
+                })
+                .unwrap_or(0)
+        };
+        anyhow::ensure!(idx < candidates.len(), "binary pick {idx} is out of range");
+        let chosen = candidates.swap_remove(idx);
+        if !prompter.interactive() {
+            print_warning(&format!(
+                "The archive holds several executables; installing {}",
+                chosen.display()
+            ));
+        }
+        Ok(chosen)
+    }
+
     /// Both phases back-to-back, for the simple single-tool callers (install / sync / single
-    /// update). The concurrent updater interleaves the phases by hand instead. Owns its own
-    /// download span so the byte-progress bar renders for the single-tool case.
-    pub async fn run(&self, client: &reqwest::Client) -> Result<InstallResult> {
-        let span = download::download_span(&self.install_name, self.asset.size);
-        let dl = self.download(client).instrument(span).await?;
-        self.install(dl)
+    /// update). The concurrent updater interleaves the phases by hand instead.
+    pub async fn run(
+        &self,
+        client: &reqwest::Client,
+        reporter: &dyn Reporter,
+        prompter: &dyn Prompter,
+    ) -> Result<InstallResult> {
+        let dl = self.download(client, reporter).await?;
+        self.install(dl, prompter)
     }
 }

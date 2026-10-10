@@ -3,17 +3,16 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::task::JoinSet;
-use tracing::Instrument;
 
 use crate::config::Config;
 use crate::error::is_interrupted;
 use crate::github::api::{ApiResponse, ConditionalResult, GithubClient};
 use crate::github::types::{Asset, Release};
-use crate::installer::download::download_span;
 use crate::installer::{Downloaded, InstallSpec};
 use crate::manifest::Manifest;
 use crate::output::{print_info, print_status, print_success, print_warning};
 use crate::picker::select_asset;
+use crate::reporter::{DownloadReporter, TermPrompter};
 use crate::state::{State, ToolEntry};
 
 /// Carries a tool's state across the concurrent updater's phase boundary: the download phase
@@ -120,7 +119,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
                     &entry.repo,
                     &format!("Pick an asset for {name}"),
                     config.prefer_libc,
-                    false,
+                    &TermPrompter,
                 ) {
                     Ok(selected) => selected.asset,
                     Err(e) if is_interrupted(&e) => return Err(e),
@@ -150,22 +149,19 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    // Phase C: concurrent downloads. Each task runs inside its own `download` span, which
-    // renders the byte-progress bar (via tracing-indicatif) and tags the task's log events.
+    // Phase C: concurrent downloads, each drawing its bar through the shared reporter.
     let http = client.http_client().clone();
-    // let mut pending_map: HashMap<String, PendingUpdate> = HashMap::new();
+    let reporter = Arc::new(DownloadReporter::default());
     let mut dl_set: JoinSet<(PendingUpdate, Result<Downloaded>)> = JoinSet::new();
 
     for p in pending {
         let http = http.clone();
-        let span = download_span(&p.name, p.asset.size);
-        dl_set.spawn(
-            async move {
-                let dl = Downloaded::fetch(&http, &p.asset, &p.release.assets).await;
-                (p, dl)
-            }
-            .instrument(span),
-        );
+        let reporter = reporter.clone();
+        dl_set.spawn(async move {
+            let dl =
+                Downloaded::fetch(&http, &p.asset, &p.release.assets, &*reporter, &p.name).await;
+            (p, dl)
+        });
     }
 
     let mut downloads: Vec<(PendingUpdate, Downloaded)> = Vec::new();
@@ -194,7 +190,7 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         if !p.entry.stem.is_empty() {
             builder = builder.variant(&p.entry.stem);
         }
-        match builder.build().install(dl) {
+        match builder.build().install(dl, &TermPrompter) {
             Ok(ir) => {
                 State::mutate(|s| s.upsert(ir.tool_entry.with_etag(p.new_etag)))?;
                 print_success(&format!(
@@ -298,7 +294,7 @@ pub async fn cmd_update(
                 &entry.repo,
                 "Pick an asset",
                 config.prefer_libc,
-                false,
+                &TermPrompter,
             )?
             .asset;
             let install_dir = entry.install_dir(&config.install_dir).to_path_buf();
@@ -311,7 +307,14 @@ pub async fn cmd_update(
             if !entry.stem.is_empty() {
                 builder = builder.variant(&entry.stem);
             }
-            let result = builder.build().run(client.http_client()).await?;
+            let result = builder
+                .build()
+                .run(
+                    client.http_client(),
+                    &DownloadReporter::default(),
+                    &TermPrompter,
+                )
+                .await?;
 
             State::mutate(|s| s.upsert(result.tool_entry.with_etag(new_etag)))?;
             print_success(&format!(

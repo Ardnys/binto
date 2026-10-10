@@ -4,25 +4,9 @@ use anyhow::Result;
 use crate::config::Libc;
 use crate::github::types::{Asset, Release};
 use crate::installer::default_binary_name;
-use crate::matcher::rank::SelectionNote;
+use crate::installer::reporter::Prompter;
 use crate::matcher::{MatchOutput, PreviousChoice, distinct_stems, match_asset};
 use crate::output::{print_info, print_warning};
-
-// TODO: this could be an impl SelectionNote
-/// One line explaining what the release could not give you, for the notes the matcher
-/// attached to its pick.
-fn describe(note: &SelectionNote) -> String {
-    match note {
-        SelectionNote::Fallback {
-            dimension,
-            wanted,
-            got,
-        } => format!("{dimension}: {got} (preferred {wanted} not available)"),
-        SelectionNote::Unspecified { dimension } => {
-            format!("{dimension}: not stated by the asset name")
-        }
-    }
-}
 
 /// One asset, chosen, plus which of the repo's binaries it turned out to be.
 pub struct SelectedAsset {
@@ -34,8 +18,8 @@ pub struct SelectedAsset {
 
 /// Resolve a release to a single concrete asset for the current arch.
 ///
-/// Auto-selects when the matcher is confident; otherwise falls back to an interactive
-/// picker (or, when `assume_yes`, the top-scored candidate). `previous` is the tool's stored
+/// Auto-selects when the matcher is confident; otherwise asks `prompter` (a non-interactive
+/// one gets the top-scored candidate). `previous` is the tool's stored
 /// `asset_pattern` and `stem` for updates, or `None` for a fresh install. This is the single selection path
 /// shared by install and both update flows.
 pub fn select_asset(
@@ -45,8 +29,9 @@ pub fn select_asset(
     repo: &str,
     prompt: &str,
     prefer_libc: Libc,
-    assume_yes: bool,
+    prompter: &dyn Prompter,
 ) -> Result<SelectedAsset> {
+    let assume_yes = !prompter.interactive();
     let match_output = match_asset(
         release.assets.clone(),
         user_arch,
@@ -62,7 +47,7 @@ pub fn select_asset(
             // Say so when the release could not satisfy a preference, instead of letting
             // a fallback look identical to a match.
             for note in &s.notes {
-                print_info(&format!("  ↳ {}", describe(note)));
+                print_info(&format!("  ↳ {note}"));
             }
             SelectedAsset {
                 variant: s.variant,
@@ -92,12 +77,8 @@ pub fn select_asset(
                 top
             } else {
                 let names: Vec<String> = candidates.iter().map(|c| c.name().to_string()).collect();
-                let idx = dialoguer::Select::new()
-                    .with_prompt(prompt)
-                    .items(&names)
-                    .default(0)
-                    .interact()?;
-                candidates.into_iter().nth(idx).unwrap()
+                let idx = prompter.select(prompt, &names)?;
+                candidates.swap_remove(idx)
             };
 
             // Naming by stem is only safe when a person saw which asset they picked. Under
@@ -123,29 +104,4 @@ pub fn select_asset(
     };
 
     Ok(selected)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_unmet_libc_preference_reads_as_a_fallback() {
-        assert_eq!(
-            describe(&SelectionNote::Fallback {
-                dimension: "libc",
-                wanted: "gnu",
-                got: "musl",
-            }),
-            "libc: musl (preferred gnu not available)"
-        );
-    }
-
-    #[test]
-    fn an_unstated_dimension_says_so() {
-        assert_eq!(
-            describe(&SelectionNote::Unspecified { dimension: "arch" }),
-            "arch: not stated by the asset name"
-        );
-    }
 }

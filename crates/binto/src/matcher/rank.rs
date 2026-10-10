@@ -82,6 +82,22 @@ pub enum SelectionNote {
     Unspecified { dimension: &'static str },
 }
 
+/// One line explaining what the release could not give you.
+impl std::fmt::Display for SelectionNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fallback {
+                dimension,
+                wanted,
+                got,
+            } => write!(f, "{dimension}: {got} (preferred {wanted} not available)"),
+            Self::Unspecified { dimension } => {
+                write!(f, "{dimension}: not stated by the asset name")
+            }
+        }
+    }
+}
+
 /// A candidate placed on the preference tiers.
 #[derive(Debug, Clone)]
 pub struct RankedAsset {
@@ -241,6 +257,22 @@ mod tests {
             size: 1024,
             content_type: "application/octet-stream".to_string(),
         }
+    }
+
+    #[test]
+    fn an_unmet_libc_preference_reads_as_a_fallback() {
+        let note = SelectionNote::Fallback {
+            dimension: "libc",
+            wanted: "gnu",
+            got: "musl",
+        };
+        assert_eq!(note.to_string(), "libc: musl (preferred gnu not available)");
+    }
+
+    #[test]
+    fn an_unstated_dimension_says_so() {
+        let note = SelectionNote::Unspecified { dimension: "arch" };
+        assert_eq!(note.to_string(), "arch: not stated by the asset name");
     }
 
     /// Filter then rank, as `match_asset` does — tests state release contents, not

@@ -12,6 +12,7 @@ mod manifest;
 mod matcher;
 mod output;
 mod picker;
+mod reporter;
 mod state;
 mod sync;
 mod timer;
@@ -430,20 +431,18 @@ fn cmd_remove(name: &str, yes: bool, _config: &Config) -> Result<()> {
         anyhow::bail!("Aborted.");
     }
 
-    if !yes {
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt(format!(
-                "Remove {} ({}) from {} ?",
-                name,
-                entry.installed_tag,
-                entry.install_path.display()
-            ))
-            .default(false)
-            .interact()?;
-        if !confirmed {
-            print_info("Aborted.");
-            return Ok(());
-        }
+    let confirmed = reporter::prompter(yes).confirm(
+        &format!(
+            "Remove {} ({}) from {} ?",
+            name,
+            entry.installed_tag,
+            entry.install_path.display()
+        ),
+        false,
+    )?;
+    if !confirmed {
+        print_info("Aborted.");
+        return Ok(());
     }
 
     // Delete the binary + drop the entry under the global lock, re-reading fresh state so a

@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::task::JoinSet;
-use tracing::Instrument;
 
 use crate::config::Config;
 use crate::github::GithubClient;
 use crate::github::types::{Asset, Release};
-use crate::installer::download::download_span;
 use crate::installer::{Downloaded, InstallResult, InstallSpec, default_binary_name};
 use crate::manifest::{Manifest, ManifestEntry};
 use crate::matcher::facts::detect_arch;
 use crate::output::{print_info, print_status, print_success, print_warning};
 use crate::picker;
+use crate::reporter::{DownloadReporter, TermPrompter};
 use crate::state::State;
 
 /// Carries a manifest entry across the concurrent sync's phase boundaries: the download phase
@@ -121,7 +121,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             &entry.repo,
             &format!("Pick an asset for {}", entry.repo),
             config.prefer_libc,
-            false,
+            &TermPrompter,
         ) {
             Ok(selected) => selected,
             Err(e) => {
@@ -153,9 +153,9 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
     }
 
     if !pending.is_empty() {
-        // Phase C: concurrent downloads. Each task runs inside its own `download` span, which
-        // renders the byte-progress bar (via tracing-indicatif) and tags the task's log events.
+        // Phase C: concurrent downloads, each drawing its bar through the shared reporter.
         let http = client.http_client().clone();
+        let reporter = Arc::new(DownloadReporter::default());
         let mut pending_map: HashMap<String, PendingSync> = HashMap::new();
         let mut dl_set: JoinSet<(String, Result<Downloaded>)> = JoinSet::new();
 
@@ -166,16 +166,12 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             // Each task verifies against its own release's assets (the checksum lives there),
             // not the union of every tool's picked asset.
             let all_assets = p.release.assets.clone();
-            let span = download_span(&task_name, asset.size);
-            dl_set.spawn(
-                async move {
-                    (
-                        task_name,
-                        Downloaded::fetch(&http, &asset, &all_assets).await,
-                    )
-                }
-                .instrument(span),
-            );
+            let reporter = reporter.clone();
+            dl_set.spawn(async move {
+                let dl =
+                    Downloaded::fetch(&http, &asset, &all_assets, &*reporter, &task_name).await;
+                (task_name, dl)
+            });
             pending_map.insert(p.install_name.clone(), p);
         }
 
@@ -206,7 +202,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             if let Some(stem) = &p.variant {
                 builder = builder.variant(stem);
             }
-            match builder.build().install(dl).and_then(record) {
+            match builder.build().install(dl, &TermPrompter).and_then(record) {
                 Ok(ir) => {
                     installed += 1;
                     print_success(&format!(
@@ -271,11 +267,8 @@ fn prune_extras(manifest: &Manifest, yes: bool) -> Result<()> {
         print_status(&format!("  {name} ({})", path.display()));
     }
 
-    let confirmed = yes
-        || dialoguer::Confirm::new()
-            .with_prompt(format!("Remove {} tool(s)?", extras.len()))
-            .default(false)
-            .interact()?;
+    let confirmed = crate::reporter::prompter(yes)
+        .confirm(&format!("Remove {} tool(s)?", extras.len()), false)?;
     if !confirmed {
         print_info("Prune cancelled.");
         return Ok(());

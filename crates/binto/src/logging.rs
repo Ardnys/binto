@@ -1,6 +1,6 @@
 //! Tracing setup: a styled terminal layer (preserves binto's UX, → stderr) plus an always-on
-//! rotating file log under the data dir, with download progress driven by `tracing-indicatif`
-//! spans so log lines never clobber the bars.
+//! rotating file log under the data dir. Terminal lines print above the download bars on
+//! [`output::progress`] instead of clobbering them.
 //!
 //! Verbosity: `-v`/`-vv`/`-q` control the *terminal* level; `BINTO_LOG` controls the *file* level
 //! (`BINTO_LOG=off` disables the file). The file defaults to `debug` so a failed install is always
@@ -15,14 +15,50 @@ use std::path::PathBuf;
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing_indicatif::IndicatifLayer;
-use tracing_indicatif::filter::IndicatifFilter;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, fmt};
 
+use indicatif::ProgressDrawTarget;
+
+use crate::output;
 use crate::ui_format::UiFormat;
+
+/// Stderr for the terminal layer. Each event is buffered and written in one go with the
+/// progress bars hidden, so it lands above them rather than through them.
+struct AboveProgress;
+
+impl<'a> MakeWriter<'a> for AboveProgress {
+    type Writer = AboveProgressWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        AboveProgressWriter(Vec::new())
+    }
+}
+
+struct AboveProgressWriter(Vec<u8>);
+
+impl Write for AboveProgressWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for AboveProgressWriter {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            output::progress().suspend(|| {
+                let _ = io::stderr().write_all(&self.0);
+            });
+        }
+    }
+}
 
 /// Wraps a writer to strip ANSI escape codes. The terminal-facing status lines pre-render their
 /// color with `console::style`, so that color is baked into the event message; the file log must
@@ -160,26 +196,25 @@ pub fn init(verbose: u8, quiet: bool) -> Option<WorkerGuard> {
 
     match LogFormat::from_env() {
         LogFormat::Pretty => {
-            let indicatif_layer = IndicatifLayer::new();
-            let stderr_writer = indicatif_layer.get_stderr_writer();
+            if quiet {
+                output::progress().set_draw_target(ProgressDrawTarget::hidden());
+            }
 
             let terminal_layer = fmt::layer()
                 .event_format(UiFormat)
-                .with_writer(stderr_writer)
+                .with_writer(AboveProgress)
                 .with_filter(terminal_filter(verbose, quiet));
 
             tracing_subscriber::registry()
                 .with(file_layer)
                 .with(terminal_layer)
-                // Only spans carrying an `indicatif.pb_show` field render a bar (download spans);
-                // everything else is just structured context.
-                .with(indicatif_layer.with_filter(IndicatifFilter::new(false)))
                 .init();
         }
         LogFormat::Json => {
             // One JSON object per line on stderr; flattened fields and the span chain included so
-            // the harness can trace each decision back through match_asset → score. No indicatif
-            // layer — progress bars would corrupt the stream.
+            // the harness can trace each decision back through match_asset → score. No progress
+            // bars — they would corrupt the stream.
+            output::progress().set_draw_target(ProgressDrawTarget::hidden());
             let terminal_layer = fmt::layer()
                 .json()
                 .flatten_event(true)

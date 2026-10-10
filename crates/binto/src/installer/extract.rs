@@ -123,7 +123,9 @@ const ELF_MAGIC: &[u8] = b"\x7fELF";
 pub fn find_binary(dir: &Path, binary_name: &str) -> Result<BinarySearchResult> {
     let mut elf_files: Vec<PathBuf> = Vec::new();
 
+    // Sorted, so the same archive always yields the same match and the same candidate order.
     for entry in walkdir::WalkDir::new(dir)
+        .sort_by_file_name()
         .into_iter()
         .filter_map(|e: Result<walkdir::DirEntry, _>| e.ok())
         .filter(|e: &walkdir::DirEntry| e.file_type().is_file())

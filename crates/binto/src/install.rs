@@ -5,11 +5,13 @@ use anyhow::Result;
 use crate::config::{self, Config};
 use crate::github::GithubClient;
 use crate::github::types::{Asset, Release};
+use crate::installer::reporter::Prompter;
 use crate::installer::{InstallResult, InstallSpec, default_binary_name};
 use crate::manifest::Manifest;
 use crate::matcher::facts::detect_arch;
 use crate::output::{print_info, print_success, print_warning};
 use crate::picker;
+use crate::reporter::{self, DownloadReporter, TermPrompter};
 use crate::state::State;
 
 /// How an [`InstallRequest`] should choose which release to install.
@@ -76,7 +78,7 @@ impl InstallRequest<'_> {
             self.repo,
             "Pick an asset",
             config.prefer_libc,
-            self.assume_yes,
+            reporter::prompter(self.assume_yes),
         )?;
 
         Ok(Resolved {
@@ -100,7 +102,14 @@ impl InstallRequest<'_> {
         if let Some(alias) = self.alias {
             builder = builder.install_name(alias);
         }
-        builder.build().run(client.http_client()).await
+        builder
+            .build()
+            .run(
+                client.http_client(),
+                &DownloadReporter::default(),
+                reporter::prompter(self.assume_yes),
+            )
+            .await
     }
 
     async fn resolve_release(&self, client: &GithubClient, config: &Config) -> Result<Release> {
@@ -126,11 +135,8 @@ impl InstallRequest<'_> {
                     .iter()
                     .map(|r| format!("{} ({})", r.tag_name, r.published_at.format("%Y-%m-%d")))
                     .collect();
-                let idx = dialoguer::FuzzySelect::new()
-                    .with_prompt("Pick a release")
-                    .items(&labels)
-                    .default(0)
-                    .interact()?;
+                let idx =
+                    reporter::prompter(self.assume_yes).fuzzy_select("Pick a release", &labels)?;
 
                 let release = releases.swap_remove(idx);
                 println!("Selected: {} — {}", release.tag_name, release.html_url);
@@ -216,10 +222,10 @@ pub async fn cmd_install(
         if assume_yes {
             print_info("Installing anyway (--yes); binto will manage it going forward.");
         } else {
-            let proceed = dialoguer::Confirm::new()
-                .with_prompt("Install anyway and let binto manage it going forward?")
-                .default(false)
-                .interact()?;
+            let proceed = TermPrompter.confirm(
+                "Install anyway and let binto manage it going forward?",
+                false,
+            )?;
             if !proceed {
                 print_info("Installation cancelled.");
                 return Ok(());
