@@ -2,7 +2,9 @@ pub mod binary;
 pub mod checksum;
 pub mod download;
 pub mod extract;
+pub mod plan;
 pub mod reporter;
+pub mod run;
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +58,9 @@ impl Drop for InstallGuard {
 pub struct InstallResult {
     pub tool_entry: ToolEntry,
     pub installed_path: PathBuf,
+    /// Which of the repo's binaries this is, when its release ships several. The manifest
+    /// key for the tool; `None` for the usual one-binary repo.
+    pub variant: Option<String>,
 }
 
 // TODO: check if we do too much string operations on repo. It could be its own type then.
@@ -65,25 +70,54 @@ pub fn default_binary_name(repo: &str) -> &str {
     repo.split('/').next_back().unwrap_or(repo)
 }
 
+/// A verified download of an [`InstallSpec`]'s asset, ready to install. Its temp files are
+/// removed when it drops.
 pub struct Downloaded {
-    pub asset_path: PathBuf,
-    pub sha256: Option<String>,
+    asset_path: PathBuf,
+    sha256: Option<String>,
     guard: InstallGuard,
 }
 
-impl Downloaded {
-    /// Download the asset into the cache and checksum-verify it. Concurrency-safe —
-    /// the `update --all` fan-out clones the asset into each task and calls this directly,
-    /// since a borrowing `InstallSpec` method can't satisfy the `'static` bound on spawned
-    /// futures. Sequential callers go through `InstallSpec::download`.
-    #[tracing::instrument(name = "download", skip_all, fields(name = %name))]
-    pub async fn fetch(
+/// One concrete installation: the release, the asset chosen from it, where it goes and what
+/// it is called. Owned, so it can move through the download and install stages on its own.
+/// Built by [`plan::spec_for`], the one place install and update differ.
+pub struct InstallSpec {
+    repo: String,
+    release: Release,
+    asset: Asset,
+    install_dir: PathBuf,
+    /// Locates the binary *inside* an archive (exact-match then single-ELF fallback).
+    /// Repo- or stem-derived, never the alias.
+    find_name: String,
+    /// The installed filename and the key the tool is tracked by in state.
+    install_name: String,
+    /// Which of the repo's binaries this is, when the release ships several.
+    variant: Option<String>,
+    /// The release's ETag, recorded so the next update check can be conditional.
+    etag: Option<String>,
+    /// The tracked entry this replaces, for an update.
+    replaces: Option<ToolEntry>,
+}
+
+impl InstallSpec {
+    pub fn install_name(&self) -> &str {
+        &self.install_name
+    }
+
+    /// The tracked entry this replaces, for an update; `None` for a fresh install.
+    pub fn replaces(&self) -> Option<&ToolEntry> {
+        self.replaces.as_ref()
+    }
+
+    /// Download the asset into the cache and checksum-verify it against the release's
+    /// checksum asset, when it publishes one.
+    #[tracing::instrument(name = "download", skip_all, fields(name = %self.install_name))]
+    pub async fn download(
+        &self,
         client: &reqwest::Client,
-        asset: &Asset,
-        all_assets: &[Asset],
         reporter: &dyn Reporter,
-        name: &str,
     ) -> Result<Downloaded> {
+        let asset = &self.asset;
         let mut guard = InstallGuard::new();
 
         // Track before streaming: a Ctrl-C drops this future mid-download, and the guard must
@@ -95,196 +129,91 @@ impl Downloaded {
             &asset.browser_download_url,
             &asset_path,
             reporter,
-            name,
+            &self.install_name,
             asset.size,
         )
         .await
         .with_context(|| format!("failed to download {}", asset.name))?;
 
-        let installed_sha256 =
-            if let Some(chk_asset) = checksum::find_checksum_asset(&asset.name, all_assets) {
+        let sha256 = match checksum::find_checksum_asset(&asset.name, &self.release.assets) {
+            Some(chk_asset) => {
                 tracing::debug!("Checksum asset: {:?}", chk_asset);
-                match checksum::verify_checksum(client, &asset_path, &asset.name, chk_asset).await {
-                    Ok(hash) => Some(hash),
-                    Err(e) => return Err(e),
-                }
-            } else {
+                Some(checksum::verify_checksum(client, &asset_path, &asset.name, chk_asset).await?)
+            }
+            None => {
                 tracing::debug!("no checksum asset published; recording local sha256");
                 checksum::sha256_file(&asset_path).ok()
-            };
+            }
+        };
 
         Ok(Downloaded {
             asset_path,
-            sha256: installed_sha256,
+            sha256,
             guard,
         })
     }
-}
-
-/// A fully-resolved installation: a concrete release + asset, the directory to install into,
-/// and the resolved name split. Bundles everything the download → install pipeline needs so
-/// callers pass no loose parameters. Build via [`InstallSpec::builder`].
-pub struct InstallSpec<'a> {
-    repo: &'a str,
-    release: &'a Release,
-    asset: &'a Asset,
-    install_dir: &'a Path,
-    /// Locates the binary *inside* an archive (exact-match then single-ELF fallback).
-    /// Repo-derived, never the alias.
-    find_name: String,
-    /// The installed filename and the key the tool is tracked by in state — the `--alias`
-    /// (or a managed tool's existing `binary_name`), else the repo-derived default.
-    install_name: String,
-}
-
-/// Builder for [`InstallSpec`]. `install_dir` is required; `install_name` defaults to the
-/// repo-derived name when not set.
-pub struct InstallSpecBuilder<'a> {
-    repo: &'a str,
-    release: &'a Release,
-    asset: &'a Asset,
-    install_dir: Option<&'a Path>,
-    install_name: Option<String>,
-    variant: Option<String>,
-}
-
-impl<'a> InstallSpec<'a> {
-    pub fn builder(
-        repo: &'a str,
-        release: &'a Release,
-        asset: &'a Asset,
-    ) -> InstallSpecBuilder<'a> {
-        InstallSpecBuilder {
-            repo,
-            release,
-            asset,
-            install_dir: None,
-            install_name: None,
-            variant: None,
-        }
-    }
-}
-
-impl<'a> InstallSpecBuilder<'a> {
-    pub fn install_dir(mut self, dir: &'a Path) -> Self {
-        self.install_dir = Some(dir);
-        self
-    }
-
-    /// Override the installed name (alias, or a managed tool's tracked `binary_name`).
-    pub fn install_name(mut self, name: impl Into<String>) -> Self {
-        self.install_name = Some(name.into());
-        self
-    }
-
-    /// Which of the repo's binaries this is, when the release ships more than one.
-    ///
-    /// A repo publishing `tool-cli` beside `tool-server` names neither of them after the
-    /// repo, so both the archive lookup and the installed filename come from the stem —
-    /// otherwise the two would land on the same name and the second would overwrite the
-    /// first. An explicit [`install_name`](Self::install_name) still wins over it.
-    pub fn variant(mut self, stem: impl Into<String>) -> Self {
-        self.variant = Some(stem.into());
-        self
-    }
-
-    /// Resolve the name split and finalize the spec. Panics if `install_dir` was never set.
-    pub fn build(self) -> InstallSpec<'a> {
-        let find_name = self
-            .variant
-            .clone()
-            .unwrap_or_else(|| default_binary_name(self.repo).to_string());
-        let install_name = self.install_name.unwrap_or_else(|| find_name.clone());
-        InstallSpec {
-            repo: self.repo,
-            release: self.release,
-            asset: self.asset,
-            install_dir: self
-                .install_dir
-                .expect("InstallSpecBuilder::install_dir must be set before build"),
-            find_name,
-            install_name,
-        }
-    }
-}
-
-impl InstallSpec<'_> {
-    /// Download + verify. Thin wrapper over [`Downloaded::fetch`] for sequential callers; the
-    /// concurrent updater calls `Downloaded::fetch` directly.
-    pub async fn download(
-        &self,
-        client: &reqwest::Client,
-        reporter: &dyn Reporter,
-    ) -> Result<Downloaded> {
-        Downloaded::fetch(
-            client,
-            self.asset,
-            &self.release.assets,
-            reporter,
-            &self.install_name,
-        )
-        .await
-    }
 
     /// Extract (or treat as a raw binary), locate the binary, atomic-install it, and
-    /// build the resulting `ToolEntry`. Sequential — may show the interactive binary picker.
+    /// build the resulting `ToolEntry`. Sequential — may ask `prompter` which binary to take.
     #[tracing::instrument(skip_all, fields(repo = %self.repo, install_name = %self.install_name))]
     pub fn install(&self, mut dl: Downloaded, prompter: &dyn Prompter) -> Result<InstallResult> {
         let asset_lower = self.asset.name.to_lowercase();
-        let kind = ArchiveKind::from_filename(&asset_lower);
-
-        let binary_src = if let Some(archive) = kind {
-            let extract_dir = download::cache_dir().join(format!("{}-extract", self.asset.name));
-            dl.guard.track_dir(extract_dir.clone());
-
-            print_info("Extracting archive...");
-            extract::extract_archive(archive, &dl.asset_path, &extract_dir)?;
-
-            // Locate binary inside the extracted tree
-            match find_binary(&extract_dir, &self.find_name)? {
-                BinarySearchResult::Found(p) => {
-                    tracing::debug!(path = %p.display(), "located binary in archive");
-                    p
-                }
-                BinarySearchResult::Multiple(candidates) => {
-                    self.pick_binary(candidates, prompter)?
-                }
-                BinarySearchResult::NotFound => {
-                    return Err(BintoError::BinaryNotFoundInArchive.into());
-                }
-            }
-        } else {
-            dl.asset_path.clone()
+        let binary_src = match ArchiveKind::from_filename(&asset_lower) {
+            Some(archive) => self.extract_binary(archive, &mut dl, prompter)?,
+            None => dl.asset_path.clone(),
         };
 
-        // chmod + atomic install
         let installed_path =
-            binary::atomic_install(&binary_src, self.install_dir, &self.install_name)?;
+            binary::atomic_install(&binary_src, &self.install_dir, &self.install_name)?;
 
-        let asset_pattern = asset_to_pattern(&self.asset.name, &self.release.tag_name);
-        // Recorded, not yet used for naming: which binary of the repo this is, so a repo
-        // shipping several can tell its entries apart even when one carries an `--alias`.
-        let stem = AssetName::new(&self.asset.name).stem(Some(&self.release.tag_name));
-
-        let tool_entry = ToolEntry {
-            repo: self.repo.to_string(),
-            installed_tag: self.release.tag_name.clone(),
-            install_path: installed_path.clone(),
-            binary_name: self.install_name.clone(),
-            stem,
-            asset_pattern,
-            installed_sha256: dl.sha256.clone(),
-            etag: None,
-            last_checked: Some(Utc::now()),
-            published_at: Some(self.release.published_at),
-        };
-
-        // Guard drops here. Temp files are removed (guard owns asset_path clone, not
+        // Guard drops with `dl`, removing the temp files (it owns the cache paths, not
         // installed_path).
         Ok(InstallResult {
-            tool_entry,
+            tool_entry: self.tool_entry(&installed_path, dl.sha256.clone()),
             installed_path,
+            variant: self.variant.clone(),
         })
+    }
+
+    /// Unpack the archive into the cache and find the binary in it.
+    fn extract_binary(
+        &self,
+        archive: ArchiveKind,
+        dl: &mut Downloaded,
+        prompter: &dyn Prompter,
+    ) -> Result<PathBuf> {
+        let extract_dir = download::cache_dir().join(format!("{}-extract", self.asset.name));
+        dl.guard.track_dir(extract_dir.clone());
+
+        print_info("Extracting archive...");
+        extract::extract_archive(archive, &dl.asset_path, &extract_dir)?;
+
+        match find_binary(&extract_dir, &self.find_name)? {
+            BinarySearchResult::Found(p) => {
+                tracing::debug!(path = %p.display(), "located binary in archive");
+                Ok(p)
+            }
+            BinarySearchResult::Multiple(candidates) => self.pick_binary(candidates, prompter),
+            BinarySearchResult::NotFound => Err(BintoError::BinaryNotFoundInArchive.into()),
+        }
+    }
+
+    /// The state entry recording this installation.
+    fn tool_entry(&self, installed_path: &Path, sha256: Option<String>) -> ToolEntry {
+        ToolEntry {
+            repo: self.repo.clone(),
+            installed_tag: self.release.tag_name.clone(),
+            install_path: installed_path.to_path_buf(),
+            binary_name: self.install_name.clone(),
+            // Which binary of the repo this is, so a repo shipping several can tell its
+            // entries apart even when one carries an `--alias`.
+            stem: AssetName::new(&self.asset.name).stem(Some(&self.release.tag_name)),
+            asset_pattern: asset_to_pattern(&self.asset.name, &self.release.tag_name),
+            installed_sha256: sha256,
+            etag: self.etag.clone(),
+            last_checked: Some(Utc::now()),
+            published_at: Some(self.release.published_at),
+        }
     }
 
     /// Choose among several executables found in the archive. Without a person to ask, take
@@ -319,17 +248,5 @@ impl InstallSpec<'_> {
             ));
         }
         Ok(chosen)
-    }
-
-    /// Both phases back-to-back, for the simple single-tool callers (install / sync / single
-    /// update). The concurrent updater interleaves the phases by hand instead.
-    pub async fn run(
-        &self,
-        client: &reqwest::Client,
-        reporter: &dyn Reporter,
-        prompter: &dyn Prompter,
-    ) -> Result<InstallResult> {
-        let dl = self.download(client, reporter).await?;
-        self.install(dl, prompter)
     }
 }

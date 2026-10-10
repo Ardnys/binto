@@ -8,7 +8,8 @@ use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::installer::reporter::{Prompter, Reporter};
-use crate::output;
+use crate::installer::run::{Installed, Outcome};
+use crate::output::{self, print_info, print_status, print_success, print_warning};
 
 /// Draws one byte-progress bar per running download, largest on top, in the style of uv's
 /// `ProgressReporter`. Bars live on [`output::progress`], so log lines print above them.
@@ -157,4 +158,74 @@ pub fn prompter(assume_yes: bool) -> &'static dyn Prompter {
     } else {
         &TermPrompter
     }
+}
+
+/// Print what happened to each tool, then hand back the installed ones — or an error if any
+/// tool failed. A lone tool's failure is returned as it is, so `main` prints it with its hint.
+pub fn report(outcomes: Vec<Outcome>) -> Result<Vec<Installed>> {
+    let lone = outcomes.len() == 1;
+    let mut installed = Vec::new();
+    let mut failed = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Outcome::Installed(done) => {
+                print_installed(&done);
+                installed.push(*done);
+            }
+            Outcome::Failed { name, error } if lone => failed.push((name, error)),
+            Outcome::Failed { name, error } => {
+                print_warning(&format!("{name}: {error:#}"));
+                failed.push((name, error));
+            }
+            other => print_settled(&other),
+        }
+    }
+    match failed.len() {
+        0 => Ok(installed),
+        1 if lone => Err(failed.swap_remove(0).1),
+        n => {
+            let names: Vec<&str> = failed.iter().map(|(name, _)| name.as_str()).collect();
+            anyhow::bail!("{n} tool(s) failed: {}", names.join(", "))
+        }
+    }
+}
+
+fn print_installed(done: &Installed) {
+    let entry = &done.result.tool_entry;
+    match &done.replaced {
+        Some(from) => print_success(&format!(
+            "{}: {} → {}",
+            entry.binary_name, from.installed_tag, entry.installed_tag
+        )),
+        None => print_success(&format!(
+            "Installed {} {} → {}",
+            entry.binary_name,
+            entry.installed_tag,
+            done.result.installed_path.display()
+        )),
+    }
+}
+
+/// A tool left as it was.
+fn print_settled(outcome: &Outcome) {
+    match outcome {
+        Outcome::UpToDate { name, tag } => print_up_to_date(name, tag),
+        Outcome::Pinned {
+            name,
+            installed,
+            pin,
+        } => print_status(&format!(
+            "  {} {installed} (pinned {pin})",
+            console::style(name).blue().bold()
+        )),
+        Outcome::Declined { name } => print_info(&format!("{name}: installation cancelled.")),
+        Outcome::Installed(_) | Outcome::Failed { .. } => {}
+    }
+}
+
+pub fn print_up_to_date(name: &str, tag: &str) {
+    print_status(&format!(
+        "  {} {tag} (up to date)",
+        console::style(name).green().bold(),
+    ));
 }

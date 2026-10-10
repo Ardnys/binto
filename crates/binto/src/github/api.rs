@@ -53,6 +53,11 @@ impl GithubClient {
         Ok(Self { client, token })
     }
 
+    /// A client authenticated with `GITHUB_TOKEN`, else the configured token.
+    pub fn from_config(config: &crate::config::Config) -> Result<Self> {
+        Self::new(Self::resolve_token(config.github_token.clone()))
+    }
+
     pub fn http_client(&self) -> &reqwest::Client {
         &self.client
     }
