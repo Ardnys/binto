@@ -147,7 +147,6 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     }
 
     if pending.is_empty() {
-        state.save()?;
         return Ok(());
     }
 
@@ -181,7 +180,6 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
     }
 
     if downloads.is_empty() {
-        state.save()?;
         return Ok(());
     }
 
@@ -210,7 +208,6 @@ pub async fn cmd_update_concurrent(config: &Config) -> Result<()> {
         }
     }
 
-    state.save()?;
     Ok(())
 }
 
@@ -285,7 +282,6 @@ pub async fn cmd_update(
                     "{tool_name} is already up to date ({}).",
                     entry.installed_tag
                 ));
-                state.save()?;
                 return Ok(());
             }
 
@@ -336,7 +332,6 @@ pub async fn cmd_update(
         }
     }
 
-    state.save()?;
     Ok(())
 }
 
@@ -432,8 +427,6 @@ pub async fn cmd_check(json: bool, config: &Config) -> Result<()> {
             }
         }
     }
-
-    state.save()?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&results)?);

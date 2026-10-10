@@ -398,8 +398,8 @@ fn cmd_list(json: bool, _config: &Config) -> Result<()> {
 }
 
 /// Delete a managed tool's binary from disk and drop it from `state`. Does NOT save state or
-/// touch the manifest — callers batch those (and `sync --prune` deliberately leaves the
-/// manifest alone). Returns the removed entry so callers can sync the manifest by repo.
+/// touch the manifest — callers run it inside `State::try_mutate` (and `sync --prune`
+/// deliberately leaves the manifest alone). Returns the removed entry so callers can sync the manifest by repo.
 /// Shared by `binto remove` and `binto sync --prune`.
 pub fn remove_tool(state: &mut State, name: &str) -> Result<ToolEntry> {
     let entry = state.require(name)?.clone();
@@ -449,7 +449,7 @@ fn cmd_remove(name: &str, yes: bool, _config: &Config) -> Result<()> {
     // Delete the binary + drop the entry under the global lock, re-reading fresh state so a
     // concurrent mutation isn't lost. `remove_tool` re-`require`s, erroring cleanly if the tool
     // vanished between the prompt and here.
-    let entry = State::mutate(|s| remove_tool(s, name))??;
+    let entry = State::try_mutate(|s| remove_tool(s, name))?;
 
     // Keep the declarative manifest in sync: drop the row for this tool's repo so a later
     // `binto sync` won't reinstall it. State is keyed by binary name, the manifest by repo.

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::github::GithubClient;
 use crate::github::types::{Asset, Release};
 use crate::installer::download::download_span;
-use crate::installer::{Downloaded, InstallSpec, default_binary_name};
+use crate::installer::{Downloaded, InstallResult, InstallSpec, default_binary_name};
 use crate::manifest::{Manifest, ManifestEntry};
 use crate::matcher::facts::detect_arch;
 use crate::output::{print_info, print_status, print_success, print_warning};
@@ -42,7 +42,7 @@ struct PendingSync {
 /// manifest (the manifest is the source of truth). `yes` skips the prune confirmation.
 pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
     let manifest = Manifest::load()?;
-    let mut state = State::load()?;
+    let state = State::load()?;
 
     // An empty manifest means "install nothing". Without --prune there's nothing to do; with
     // --prune it means "nothing should be managed", so fall through to the prune phase.
@@ -206,7 +206,7 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
             if let Some(stem) = &p.variant {
                 builder = builder.variant(stem);
             }
-            match builder.build().install(dl) {
+            match builder.build().install(dl).and_then(record) {
                 Ok(ir) => {
                     installed += 1;
                     print_success(&format!(
@@ -215,7 +215,6 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
                         ir.tool_entry.installed_tag,
                         ir.installed_path.display()
                     ));
-                    state.upsert(ir.tool_entry);
                 }
                 Err(e) => {
                     failed += 1;
@@ -225,27 +224,36 @@ pub async fn cmd_sync(config: &Config, prune: bool, yes: bool) -> Result<()> {
         }
     }
 
-    if installed > 0 {
-        state.save()?;
-    }
-
     print_status("");
     print_info(&format!(
         "Sync complete: {installed} installed, {skipped} already present, {failed} failed."
     ));
 
     if prune {
-        prune_extras(&mut state, &manifest, yes)?;
+        prune_extras(&manifest, yes)?;
     }
 
     Ok(())
+}
+
+/// Persist a freshly installed tool. The binary is already in place, so say so if only the
+/// state write failed.
+fn record(ir: InstallResult) -> Result<InstallResult> {
+    State::mutate(|s| s.upsert(ir.tool_entry.clone())).with_context(|| {
+        format!(
+            "installed {} but failed to record it in state",
+            ir.installed_path.display()
+        )
+    })?;
+    Ok(ir)
 }
 
 /// Remove managed tools whose repo is no longer in the manifest (the manifest is the source
 /// of truth). State is keyed by binary name, the manifest by repo. Lists the candidates and
 /// confirms before deleting unless `yes` is set. Unlike `binto remove`, this does NOT touch the
 /// manifest — the tools are already absent from it, which is exactly why they're pruned.
-fn prune_extras(state: &mut State, manifest: &Manifest, yes: bool) -> Result<()> {
+fn prune_extras(manifest: &Manifest, yes: bool) -> Result<()> {
+    let state = State::load()?;
     let extras: Vec<(String, PathBuf)> = state
         .iter()
         .filter(|(_, e)| !manifest.covers(&e.repo, &e.stem))
@@ -275,7 +283,7 @@ fn prune_extras(state: &mut State, manifest: &Manifest, yes: bool) -> Result<()>
 
     let mut pruned = 0usize;
     for (name, _) in &extras {
-        match crate::remove_tool(state, name) {
+        match State::try_mutate(|s| crate::remove_tool(s, name)) {
             Ok(_) => {
                 pruned += 1;
                 print_success(&format!("Removed {name}."));
@@ -284,9 +292,6 @@ fn prune_extras(state: &mut State, manifest: &Manifest, yes: bool) -> Result<()>
         }
     }
 
-    if pruned > 0 {
-        state.save()?;
-    }
     print_info(&format!("Pruned {pruned} tool(s)."));
 
     Ok(())

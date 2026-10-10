@@ -126,6 +126,16 @@ impl State {
         Ok(out)
     }
 
+    /// [`mutate`](Self::mutate) for a fallible `f`: state is saved only when `f` succeeds, so
+    /// a failed edit leaves the file untouched.
+    pub fn try_mutate<R>(f: impl FnOnce(&mut State) -> Result<R>) -> Result<R> {
+        let _guard = crate::lock::acquire()?;
+        let mut state = State::load()?;
+        let out = f(&mut state)?;
+        state.save()?;
+        Ok(out)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
