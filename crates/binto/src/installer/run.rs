@@ -3,6 +3,7 @@
 //! rest, but a Ctrl-C inside a prompt stops everything.
 
 use anyhow::{Context, Result};
+use futures_util::{StreamExt, stream};
 
 use crate::config::Config;
 use crate::error::is_interrupted;
@@ -19,6 +20,31 @@ pub struct Ctx<'a> {
     pub config: &'a Config,
     pub reporter: &'a dyn Reporter,
     pub prompter: &'a dyn Prompter,
+    /// How many requests or downloads run at once.
+    pub concurrency: usize,
+}
+
+/// How many release lookups and downloads run at once unless `BINTO_CONCURRENT_DOWNLOADS`
+/// says otherwise.
+const DEFAULT_CONCURRENCY: usize = 8;
+
+/// `BINTO_CONCURRENT_DOWNLOADS`, else [`DEFAULT_CONCURRENCY`]. At least 1.
+fn concurrency_from_env() -> usize {
+    let var = std::env::var("BINTO_CONCURRENT_DOWNLOADS").ok();
+    parse_concurrency(var.as_deref())
+}
+
+fn parse_concurrency(var: Option<&str>) -> usize {
+    match var.map(|v| v.trim().parse::<usize>()) {
+        Some(Ok(n)) => n.max(1),
+        Some(Err(_)) => {
+            print_warning(&format!(
+                "BINTO_CONCURRENT_DOWNLOADS must be a number; using {DEFAULT_CONCURRENCY}"
+            ));
+            DEFAULT_CONCURRENCY
+        }
+        None => DEFAULT_CONCURRENCY,
+    }
 }
 
 impl<'a> Ctx<'a> {
@@ -32,6 +58,7 @@ impl<'a> Ctx<'a> {
             config,
             reporter,
             prompter,
+            concurrency: concurrency_from_env(),
         })
     }
 }
@@ -117,20 +144,33 @@ pub async fn run(targets: Vec<Target>, ctx: &Ctx<'_>) -> Result<Vec<Outcome>> {
 }
 
 /// Resolve each target's release, sorted by label so prompts and output come in a stable
-/// order. A Ctrl-C in the release picker stops here.
+/// order. Targets that prompt (the release picker) go one at a time first, and a Ctrl-C there
+/// stops everything; the rest look up `ctx.concurrency` at a time.
 pub async fn resolve_all(targets: Vec<Target>, ctx: &Ctx<'_>) -> Result<Vec<Resolved>> {
-    let mut resolved = Vec::with_capacity(targets.len());
-    for target in targets {
-        let resolution = plan::resolve(&ctx.client, &target, ctx.prompter).await;
-        if let Err(e) = &resolution
-            && is_interrupted(e)
-        {
-            return resolution.map(|_| Vec::new());
+    let (prompting, quiet): (Vec<_>, Vec<_>) = targets.into_iter().partition(Target::prompts);
+
+    let mut resolved = Vec::with_capacity(prompting.len() + quiet.len());
+    for target in prompting {
+        let Resolved { target, resolution } = resolve_one(target, ctx).await;
+        match resolution {
+            Err(e) if is_interrupted(&e) => return Err(e),
+            resolution => resolved.push(Resolved { target, resolution }),
         }
-        resolved.push(Resolved { target, resolution });
     }
+    resolved.extend(
+        stream::iter(quiet)
+            .map(|target| resolve_one(target, ctx))
+            .buffer_unordered(ctx.concurrency)
+            .collect::<Vec<_>>()
+            .await,
+    );
     resolved.sort_by(|a, b| a.target.label().cmp(b.target.label()));
     Ok(resolved)
+}
+
+async fn resolve_one(target: Target, ctx: &Ctx<'_>) -> Resolved {
+    let resolution = plan::resolve(&ctx.client, &target, ctx.prompter).await;
+    Resolved { target, resolution }
 }
 
 /// Stamp `last_checked` on every tracked tool whose release was looked up.
@@ -211,12 +251,19 @@ fn take_over_unmanaged(spec: &InstallSpec, prompter: &dyn Prompter) -> Result<bo
     )
 }
 
-async fn download_all(specs: Vec<InstallSpec>, ctx: &Ctx<'_>) -> Vec<Fetched> {
-    let mut fetched = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let download = spec.download(ctx.client.http_client(), ctx.reporter).await;
-        fetched.push(Fetched { spec, download });
-    }
+/// Download `ctx.concurrency` assets at a time, largest first so the long ones don't start
+/// last. Back in name order afterwards, for installing.
+async fn download_all(mut specs: Vec<InstallSpec>, ctx: &Ctx<'_>) -> Vec<Fetched> {
+    specs.sort_by_key(|spec| std::cmp::Reverse(spec.size()));
+    let mut fetched: Vec<Fetched> = stream::iter(specs)
+        .map(|spec| async move {
+            let download = spec.download(ctx.client.http_client(), ctx.reporter).await;
+            Fetched { spec, download }
+        })
+        .buffer_unordered(ctx.concurrency)
+        .collect()
+        .await;
+    fetched.sort_by(|a, b| a.spec.install_name().cmp(b.spec.install_name()));
     fetched
 }
 
@@ -250,4 +297,18 @@ fn install_one(
         )
     })?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrency_defaults_and_never_drops_to_zero() {
+        assert_eq!(parse_concurrency(None), DEFAULT_CONCURRENCY);
+        assert_eq!(parse_concurrency(Some("3")), 3);
+        assert_eq!(parse_concurrency(Some(" 16 ")), 16);
+        assert_eq!(parse_concurrency(Some("0")), 1);
+        assert_eq!(parse_concurrency(Some("lots")), DEFAULT_CONCURRENCY);
+    }
 }

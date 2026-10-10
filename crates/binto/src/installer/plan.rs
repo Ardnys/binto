@@ -175,6 +175,12 @@ impl Target {
         }
     }
 
+    /// Whether resolving this target asks the user something (the release picker), so it
+    /// must not run alongside others.
+    pub fn prompts(&self) -> bool {
+        matches!(self.source, ReleaseSource::Pick { .. })
+    }
+
     pub fn existing(&self) -> Option<&ToolEntry> {
         self.existing.as_ref()
     }

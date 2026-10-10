@@ -104,6 +104,11 @@ impl InstallSpec {
         &self.install_name
     }
 
+    /// The asset's advertised size in bytes.
+    pub fn size(&self) -> u64 {
+        self.asset.size
+    }
+
     /// The tracked entry this replaces, for an update; `None` for a fresh install.
     pub fn replaces(&self) -> Option<&ToolEntry> {
         self.replaces.as_ref()
@@ -122,7 +127,7 @@ impl InstallSpec {
 
         // Track before streaming: a Ctrl-C drops this future mid-download, and the guard must
         // remove the partial file.
-        let asset_path = download::cache_dir().join(&asset.name);
+        let asset_path = self.cache_path(&asset.name);
         guard.track_file(asset_path.clone());
         download::download_to_cache(
             client,
@@ -175,6 +180,13 @@ impl InstallSpec {
         })
     }
 
+    /// A cache path of this spec's own. Keyed by the install name (unique per tracked tool)
+    /// as well as `name`, so two tools installing same-named assets at once — two binaries
+    /// of one archive, or two repos with generic asset names — never share a file.
+    fn cache_path(&self, name: &str) -> PathBuf {
+        download::cache_dir().join(format!("{}.{name}", self.install_name))
+    }
+
     /// Unpack the archive into the cache and find the binary in it.
     fn extract_binary(
         &self,
@@ -182,7 +194,7 @@ impl InstallSpec {
         dl: &mut Downloaded,
         prompter: &dyn Prompter,
     ) -> Result<PathBuf> {
-        let extract_dir = download::cache_dir().join(format!("{}-extract", self.asset.name));
+        let extract_dir = self.cache_path(&format!("{}-extract", self.asset.name));
         dl.guard.track_dir(extract_dir.clone());
 
         print_info("Extracting archive...");

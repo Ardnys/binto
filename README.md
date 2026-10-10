@@ -154,6 +154,8 @@ notify = "terminal"         # "terminal" | "desktop" | "none"
 
 **`GITHUB_TOKEN`** — unauthenticated requests are limited to 60/hour. A token raises this to 5000/hour. Create one at <https://github.com/settings/tokens> (no scopes needed for public repos).
 
+**`BINTO_CONCURRENT_DOWNLOADS`** — how many release lookups and downloads binto runs at once (default 8).
+
 ---
 
 
