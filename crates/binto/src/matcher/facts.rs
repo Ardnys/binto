@@ -7,6 +7,8 @@
 use std::ops::Range;
 use std::sync::LazyLock;
 
+use crate::installer::extract::ArchiveKind;
+
 // -- token matching ------------------------------------------------------
 
 /// Characters that delimit a term inside an asset name.
@@ -257,20 +259,20 @@ impl LibcFact {
 // -- packaging -----------------------------------------------------------
 
 // TODO what shall we do with completions and man pages
-// TODO: sometimes the exact same package has different archive extensions. In that scenario we can pick anything
 // TODO: there's .gz, .tar.zst
-/// Archive shapes `installer::extract::extract_archive` can actually open.
-///
-/// This table and that function must agree: an entry here that the extractor does not
-/// handle means the matcher can confidently pick an asset the install then fails on.
+/// Uses the archives supported by ArchiveKind to stem assets
 const SUPPORTED_ARCHIVES: &[(&str, Format)] = &[
-    (".tar.gz", Format::Tar),
-    (".tgz", Format::Tar),
-    (".tar.xz", Format::Tar),
-    (".tar.bz2", Format::Tar),
-    (".zip", Format::Zip),
+    archive_format(ArchiveKind::TarGz),
+    archive_format(ArchiveKind::Tgz),
+    archive_format(ArchiveKind::TarXz),
+    archive_format(ArchiveKind::TarBz2),
+    archive_format(ArchiveKind::Zip),
     (".appimage", Format::AppImage),
 ];
+
+const fn archive_format(kind: ArchiveKind) -> (&'static str, Format) {
+    (kind.extension(), Format::Archive(kind))
+}
 
 /// Extensions that are plainly not a runnable binary. Releases ship editor extensions,
 /// language-ecosystem packages, and documentation alongside the real artifact; without
@@ -323,12 +325,11 @@ const UNSUPPORTED_ARCHIVES: &[(&str, &str)] = &[
     (".lz4", "lz4"),
 ];
 
-/// How an installable asset is packaged. Ranked by [`super::rank`]; every variant here is
+/// How an installable asset is packaged. Ranked by [`super::rank()`]; every variant here is
 /// something the installer can open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    Tar,
-    Zip,
+    Archive(ArchiveKind),
     /// No recognised extension — assumed to be the binary itself.
     Raw,
     AppImage,
@@ -337,8 +338,9 @@ pub enum Format {
 impl Format {
     pub fn label(self) -> &'static str {
         match self {
-            Format::Tar => "tar",
-            Format::Zip => "zip",
+            Format::Archive(kind) => kind.label(),
+            // Format::Tar => "tar",
+            // Format::Zip => "zip",
             Format::Raw => "raw",
             Format::AppImage => "appimage",
         }
@@ -991,11 +993,11 @@ mod tests {
     #[test]
     fn formats_match_what_the_extractor_supports() {
         for (name, format) in [
-            ("tool.tar.gz", Format::Tar),
-            ("tool.tgz", Format::Tar),
-            ("tool.tar.xz", Format::Tar),
-            ("tool.tar.bz2", Format::Tar),
-            ("tool.zip", Format::Zip),
+            ("tool.tar.gz", Format::Archive(ArchiveKind::TarGz)),
+            ("tool.tgz", Format::Archive(ArchiveKind::Tgz)),
+            ("tool.tar.xz", Format::Archive(ArchiveKind::TarXz)),
+            ("tool.tar.bz2", Format::Archive(ArchiveKind::TarBz2)),
+            ("tool.zip", Format::Archive(ArchiveKind::Zip)),
             ("Tool-x86_64.AppImage", Format::AppImage),
             ("tool_linux_amd64", Format::Raw),
         ] {
@@ -1021,7 +1023,7 @@ mod tests {
         // A supported tarball must never be read as a bare `.gz`.
         assert_eq!(
             parse("tool-x86_64-linux.tar.gz").kind,
-            AssetKind::Installable(Format::Tar)
+            AssetKind::Installable(Format::Archive(ArchiveKind::TarGz))
         );
     }
 
@@ -1136,7 +1138,7 @@ mod tests {
         ] {
             assert_eq!(
                 parse(name).kind,
-                AssetKind::Installable(Format::Tar),
+                AssetKind::Installable(Format::Archive(ArchiveKind::TarGz)),
                 "{name}"
             );
         }

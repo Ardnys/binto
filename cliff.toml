@@ -1,0 +1,88 @@
+# git-cliff configuration: https://git-cliff.org/docs/configuration
+#
+#   git cliff -o CHANGELOG.md          regenerate the whole changelog
+#   git cliff --unreleased             preview what the next release will contain
+#   git cliff --tag v0.4.0 -o CHANGELOG.md   before tagging a release
+
+[remote.github]
+owner = "Ardnys"
+repo = "binto"
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to binto are documented here.\n
+"""
+body = """
+{%- macro remote_url() -%}
+  https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}
+{%- endmacro -%}
+
+{% if version -%}
+  ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+  ## [Unreleased]
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+  ### {{ group | striptags | trim | upper_first }}
+  {% for commit in commits %}
+    - {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+      {% if commit.breaking %}[**breaking**] {% endif %}\
+      {{ commit.message | split(pat="\n") | first | trim | upper_first }} \
+      ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
+  {%- endfor %}
+{% endfor %}\n
+"""
+footer = """
+{% for release in releases -%}
+  {% if release.version -%}
+    {% if release.previous.version -%}
+      [{{ release.version | trim_start_matches(pat="v") }}]: \
+      https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/compare/{{ release.previous.version }}...{{ release.version }}
+    {% endif -%}
+  {% else -%}
+    [Unreleased]: \
+    https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/compare/{{ release.previous.version }}...HEAD
+  {% endif -%}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+# Keep commits that aren't conventional (they land under "Other") instead of silently dropping
+# them — dropping is how branch work used to vanish from the changelog.
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+
+# Repair common message mistakes before parsing, so they're classified instead of skipped.
+commit_preprocessors = [
+  # `feat!(scope): …` → `feat(scope)!: …` (the `!` goes after the scope).
+  { pattern = '^(\w+)!\(([^)]*)\):', replace = '${1}(${2})!:' },
+  # A subject wrapped onto a second line with no blank line in between: join it back up.
+  { pattern = '^([^\n]+)\n([^\n])', replace = '${1} ${2}' },
+]
+
+commit_parsers = [
+  # Merges carry no content of their own; their branch's commits are listed individually.
+  { message = "^Merge (pull request|branch|remote-tracking branch)", skip = true },
+  { message = "^chore(\\(release\\))?: (bump|release)", skip = true },
+  { message = "^feat", group = "<!-- 00 -->🚀 Features" },
+  { message = "^fix", group = "<!-- 01 -->🐛 Bug Fixes" },
+  { message = "^perf", group = "<!-- 02 -->⚡ Performance" },
+  { message = "^refactor", group = "<!-- 03 -->🚜 Refactor" },
+  { message = "^docs?", group = "<!-- 04 -->📚 Documentation" },
+  { message = "^test", group = "<!-- 05 -->🧪 Testing" },
+  { message = "^style", group = "<!-- 06 -->🎨 Styling" },
+  { message = "^revert", group = "<!-- 07 -->◀️ Revert" },
+  { message = "^(ci|build)", group = "<!-- 08 -->🔧 Build and CI" },
+  { message = "^chore", group = "<!-- 09 -->⚙️ Miscellaneous" },
+  # Anything else still shows up rather than disappearing.
+  { message = ".*", group = "<!-- 10 -->Other" },
+]

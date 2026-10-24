@@ -33,3 +33,12 @@ pub enum BintoError {
     #[error("Install directory {path} does not exist and could not be created")]
     InstallDirMissing { path: PathBuf },
 }
+
+/// Whether `e` stems from the user hitting Ctrl-C inside an interactive prompt.
+pub fn is_interrupted(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::Interrupted)
+    })
+}

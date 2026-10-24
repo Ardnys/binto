@@ -4,7 +4,7 @@
 //! one definition and cannot drift: the release read on stdin ([`MatchInput`]), the
 //! verdict written to stdout ([`MatchVerdict`]), the exit codes that encode the outcome
 //! ([`Outcome::exit_code`]), the environment that puts binto in machine-readable mode
-//! ([`env`]), and the shape of the decision trace on stderr ([`TraceEvent`]).
+//! ([`mod@env`]), and the shape of the decision trace on stderr ([`TraceEvent`]).
 //!
 //! This crate is deliberately dependency-light (serde only) so the harness, and later the
 //! container runner and collector, can depend on it without pulling in the CLI.

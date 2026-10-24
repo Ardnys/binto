@@ -68,13 +68,6 @@ impl ToolEntry {
             stem: &self.stem,
         }
     }
-
-    /// Builder-style override of the cached ETag, used after a successful install so the
-    /// next conditional request can short-circuit with `304 Not Modified`.
-    pub fn with_etag(mut self, etag: Option<String>) -> Self {
-        self.etag = etag;
-        self
-    }
 }
 
 impl State {
@@ -122,6 +115,16 @@ impl State {
         let _guard = crate::lock::acquire()?;
         let mut state = State::load()?;
         let out = f(&mut state);
+        state.save()?;
+        Ok(out)
+    }
+
+    /// [`mutate`](Self::mutate) for a fallible `f`: state is saved only when `f` succeeds, so
+    /// a failed edit leaves the file untouched.
+    pub fn try_mutate<R>(f: impl FnOnce(&mut State) -> Result<R>) -> Result<R> {
+        let _guard = crate::lock::acquire()?;
+        let mut state = State::load()?;
+        let out = f(&mut state)?;
         state.save()?;
         Ok(out)
     }
@@ -256,7 +259,10 @@ mod tests {
         state.upsert(entry("bat", None));
         assert!(state.contains("bat"));
 
-        let updated = entry("bat", None).with_etag(Some("abc".to_string()));
+        let updated = ToolEntry {
+            etag: Some("abc".to_string()),
+            ..entry("bat", None)
+        };
         state.upsert(updated);
         assert_eq!(state.tools.len(), 1);
         assert_eq!(state.get("bat").unwrap().etag.as_deref(), Some("abc"));

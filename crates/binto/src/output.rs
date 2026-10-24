@@ -3,7 +3,19 @@
 //! `ui_format`) *and* lands in the file log. Machine-readable output (`--json`, the `list`
 //! table) is written directly to stdout by its callers, not through here.
 
+use std::sync::LazyLock;
+
+use indicatif::MultiProgress;
+
 use crate::error::BintoError;
+
+static PROGRESS: LazyLock<MultiProgress> = LazyLock::new(MultiProgress::new);
+
+/// The one set of progress bars binto draws. Download bars are added here, and the terminal
+/// log writer prints through [`MultiProgress::suspend`] so a message never tears a bar.
+pub fn progress() -> &'static MultiProgress {
+    &PROGRESS
+}
 
 /// Emit an error event, with a context-specific hint for the well-known `BintoError` variants.
 pub fn print_error(err: &anyhow::Error) {

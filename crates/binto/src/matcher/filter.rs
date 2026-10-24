@@ -2,7 +2,7 @@
 //!
 //! An asset either *can* be installed on this host or it cannot. Nothing here expresses a
 //! preference — a foreign architecture is not a weak signal to be outweighed, it is
-//! disqualifying. Preferences live in [`super::rank`].
+//! disqualifying. Preferences live in [`super::rank()`].
 
 use tracing::debug;
 
@@ -61,7 +61,7 @@ impl RejectReason {
 /// An asset that cleared every hard filter, carrying the facts ranking needs.
 ///
 /// The fields are flat and total: by construction this asset is installable, so there is
-/// no `Option` to unwrap and no inapplicable variant for [`super::rank`] to consider.
+/// no `Option` to unwrap and no inapplicable variant for [`super::rank`()] to consider.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub asset: Asset,
@@ -140,6 +140,8 @@ pub fn apply_hard_filters(
 
 #[cfg(test)]
 mod tests {
+    use crate::installer::extract::ArchiveKind;
+
     use super::*;
 
     fn asset(name: &str) -> Asset {
@@ -265,7 +267,7 @@ mod tests {
         assert_eq!(c.os, OsFact::Linux);
         assert_eq!(c.arch, ArchFact::Named("x86_64"));
         assert_eq!(c.libc, LibcFact::Musl);
-        assert_eq!(c.format, Format::Tar);
+        assert_eq!(c.format, Format::Archive(ArchiveKind::TarGz));
     }
 
     /// The tag only sharpens the stem — it must never change which assets survive.

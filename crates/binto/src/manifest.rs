@@ -257,6 +257,7 @@ impl Manifest {
     pub fn set_tag_and_save(repo: &str, binary: Option<&str>, tag: Option<&str>) -> Result<()> {
         let _guard = crate::lock::acquire()?;
         let mut doc = Self::load_doc()?;
+        let binary = listed_binary(&doc, repo, binary);
         let alias = existing_alias(&doc, repo, binary);
         set_spec(&mut doc, repo, binary, spec_value(tag, alias.as_deref()))?;
         Self::write_doc(&doc)
@@ -268,6 +269,7 @@ impl Manifest {
     pub fn remove_and_save(repo: &str, binary: Option<&str>) -> Result<bool> {
         let _guard = crate::lock::acquire()?;
         let mut doc = Self::load_doc()?;
+        let binary = listed_binary(&doc, repo, binary);
         let removed = remove_spec(&mut doc, repo, binary);
         if removed {
             Self::write_doc(&doc)?;
@@ -372,6 +374,18 @@ fn set_spec(doc: &mut DocumentMut, repo: &str, binary: Option<&str>, value: Valu
 
     set_value(binaries, binary, value);
     Ok(())
+}
+
+/// The binary key to edit for an installed tool. State records a stem for every tool, but
+/// a repo shipping one binary is written as a plain row with no `binaries` table; editing
+/// that row by stem would nest a new table under it (or, removing, find nothing).
+fn listed_binary<'a>(doc: &DocumentMut, repo: &str, binary: Option<&'a str>) -> Option<&'a str> {
+    let lists_binaries = doc
+        .get("tools")
+        .and_then(|tools| tools.get(repo))
+        .and_then(|entry| entry.get("binaries"))
+        .is_some();
+    binary.filter(|_| lists_binaries)
 }
 
 /// The alias already recorded for this entry, so a tag-only write does not drop it.
@@ -640,6 +654,37 @@ tool-cli = "latest"
         let rg = m.get("BurntSushi/ripgrep", None).unwrap();
         assert_eq!(rg.tag, None);
         assert_eq!(rg.alias.as_deref(), Some("rg"));
+    }
+
+    /// `update --force` and `remove` name the tool by its recorded stem, which a plain
+    /// single-binary row does not list.
+    #[test]
+    fn a_stem_on_a_plain_row_edits_the_row_itself() {
+        let mut d = doc(r#"[tools]
+"BurntSushi/ripgrep" = "14.0.0"
+"#);
+        let binary = listed_binary(&d, "BurntSushi/ripgrep", Some("ripgrep"));
+        assert_eq!(binary, None);
+
+        set_spec(&mut d, "BurntSushi/ripgrep", binary, spec_value(None, None)).unwrap();
+        assert_eq!(
+            d.to_string(),
+            "[tools]\n\"BurntSushi/ripgrep\" = \"latest\"\n"
+        );
+
+        assert!(remove_spec(&mut d, "BurntSushi/ripgrep", binary));
+        assert!(parse(&d.to_string()).is_empty());
+    }
+
+    #[test]
+    fn a_stem_on_a_listing_row_names_its_binary() {
+        let d = doc(r#"[tools."acme/tool".binaries]
+tool-cli = "latest"
+"#);
+        assert_eq!(
+            listed_binary(&d, "acme/tool", Some("tool-cli")),
+            Some("tool-cli")
+        );
     }
 
     #[test]

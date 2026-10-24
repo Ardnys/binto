@@ -12,6 +12,7 @@ mod manifest;
 mod matcher;
 mod output;
 mod picker;
+mod reporter;
 mod state;
 mod sync;
 mod timer;
@@ -21,6 +22,7 @@ mod update;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use binto_contract::{Candidate, MatchInput, MatchVerdict, Outcome};
@@ -32,7 +34,7 @@ use matcher::{MatchOutput, match_asset};
 use cli::{Cli, Commands};
 use config::Config;
 use config::Libc;
-use error::BintoError;
+use error::{BintoError, is_interrupted};
 use installer::checksum::find_checksum_asset;
 use output::{print_error, print_info, print_status, print_success, print_warning};
 use state::{State, ToolEntry};
@@ -80,36 +82,40 @@ fn parse_repo(input: &str) -> Result<String> {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    install_ctrlc_handler();
-
-    // Parse before any async/spawn so logging is live for the whole run. The worker guard must
-    // outlive every log call — hold it here until the process exits, or the file log truncates.
+fn main() -> ExitCode {
     let cli = Cli::parse();
     let _log_guard = logging::init(cli.verbose, cli.quiet);
 
-    if let Err(e) = run(cli).await {
-        print_error(&e);
-        std::process::exit(1);
-    }
-}
-
-// TODO: move this out of main.rs
-/// Restore the terminal cursor on Ctrl-C.
-///
-/// Interactive prompts (dialoguer's release/asset pickers) hide the cursor while open and
-/// only restore it on Enter/Escape. console reads Ctrl-C in raw mode and re-raises SIGINT to
-/// us, which the default handler turns into an immediate exit — *before* dialoguer can show
-/// the cursor again, leaving the terminal with an invisible cursor until `reset`. This
-/// handler runs on its own thread (so terminal I/O + exit are safe), shows the cursor, and
-/// exits with the conventional 130 (128 + SIGINT).
-fn install_ctrlc_handler() {
-    let _ = ctrlc::set_handler(|| {
-        let _ = console::Term::stderr().show_cursor();
-        let _ = console::Term::stdout().show_cursor();
-        std::process::exit(130);
+    let runtime = tokio::runtime::Runtime::new().expect("failed to start the tokio runtime");
+    // Ctrl-C drops the `run` future instead of exiting the process, so destructors (temp-file
+    // guards, locks) run. `biased` polls `ctrl_c` first, registering the handler before `run`
+    // does any work.
+    let outcome = runtime.block_on(async {
+        tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => None,
+            res = run(cli) => Some(res),
+        }
     });
+    // Dropping the runtime drops the tasks still in flight (e.g. `update --all` downloads),
+    // running their guards too.
+    drop(runtime);
+
+    match outcome {
+        Some(Ok(())) => ExitCode::SUCCESS,
+        Some(Err(e)) if !is_interrupted(&e) => {
+            print_error(&e);
+            ExitCode::FAILURE
+        }
+        // Interactive prompts (dialoguer) hide the cursor and only restore it on Enter/Escape.
+        // A Ctrl-C inside one makes console return an `Interrupted` error (after raising SIGINT,
+        // which the tokio handler absorbs), so `run` usually finishes before `ctrl_c` is seen.
+        _ => {
+            let _ = console::Term::stderr().show_cursor();
+            let _ = console::Term::stdout().show_cursor();
+            ExitCode::from(130)
+        }
+    }
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -204,8 +210,7 @@ fn maybe_print_stale_banner(config: &Config) {
     }
 }
 
-/// Build a verdict [`Candidate`] from a ranked asset. The type itself lives in
-/// `binto-contract` because the harness deserializes it.
+/// Build a verdict [`Candidate`] from a ranked asset.
 fn candidate_of(r: &RankedAsset, notes: &[SelectionNote]) -> Candidate {
     let [(_, arch), (_, os), (_, libc), (_, format)] = r.labels();
     Candidate {
@@ -394,8 +399,8 @@ fn cmd_list(json: bool, _config: &Config) -> Result<()> {
 }
 
 /// Delete a managed tool's binary from disk and drop it from `state`. Does NOT save state or
-/// touch the manifest — callers batch those (and `sync --prune` deliberately leaves the
-/// manifest alone). Returns the removed entry so callers can sync the manifest by repo.
+/// touch the manifest — callers run it inside `State::try_mutate` (and `sync --prune`
+/// deliberately leaves the manifest alone). Returns the removed entry so callers can sync the manifest by repo.
 /// Shared by `binto remove` and `binto sync --prune`.
 pub fn remove_tool(state: &mut State, name: &str) -> Result<ToolEntry> {
     let entry = state.require(name)?.clone();
@@ -426,26 +431,24 @@ fn cmd_remove(name: &str, yes: bool, _config: &Config) -> Result<()> {
         anyhow::bail!("Aborted.");
     }
 
-    if !yes {
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt(format!(
-                "Remove {} ({}) from {} ?",
-                name,
-                entry.installed_tag,
-                entry.install_path.display()
-            ))
-            .default(false)
-            .interact()?;
-        if !confirmed {
-            print_info("Aborted.");
-            return Ok(());
-        }
+    let confirmed = reporter::prompter(yes).confirm(
+        &format!(
+            "Remove {} ({}) from {} ?",
+            name,
+            entry.installed_tag,
+            entry.install_path.display()
+        ),
+        false,
+    )?;
+    if !confirmed {
+        print_info("Aborted.");
+        return Ok(());
     }
 
     // Delete the binary + drop the entry under the global lock, re-reading fresh state so a
     // concurrent mutation isn't lost. `remove_tool` re-`require`s, erroring cleanly if the tool
     // vanished between the prompt and here.
-    let entry = State::mutate(|s| remove_tool(s, name))??;
+    let entry = State::try_mutate(|s| remove_tool(s, name))?;
 
     // Keep the declarative manifest in sync: drop the row for this tool's repo so a later
     // `binto sync` won't reinstall it. State is keyed by binary name, the manifest by repo.

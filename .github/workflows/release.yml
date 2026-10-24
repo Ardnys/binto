@@ -33,6 +33,15 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # A tag pushed before the version bump builds a binary that reports the old version.
+      - name: Verify tag matches crate version
+        run: |
+          CRATE_VERSION=$(cargo pkgid -p binto | sed 's/.*[#@]//')
+          if [ "v${CRATE_VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match crate version v${CRATE_VERSION}"
+            exit 1
+          fi
+
       - name: Install cross
         if: matrix.use_cross
         uses: taiki-e/install-action@v2
@@ -92,3 +101,11 @@ jobs:
             artifacts/*.tar.gz
             SHA256SUMS
           generate_release_notes: true
+
+  docs:
+    name: Publish docs
+    needs: release
+    permissions:
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml

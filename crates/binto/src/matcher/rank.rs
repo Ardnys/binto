@@ -12,6 +12,7 @@
 use tracing::debug;
 
 use crate::config::Libc;
+use crate::installer::extract::ArchiveKind;
 use crate::matcher::facts::{ArchFact, Format, LibcFact, OsFact};
 use crate::matcher::filter::Candidate;
 
@@ -32,10 +33,22 @@ impl PreferenceProfile {
     ///
     /// Formats: tarballs first (they carry the executable bit and usually the man pages
     /// and completions too), then zip, then a bare binary, then AppImage.
+    /// # Note about ordering of `format_order` Vec
+    /// `Format` enum now uses `ArchiveKind` enum, and adding each archives one by one
+    /// implies a preference order between archives. So, TarGz is preferred to TarXz
+    /// when both are present.
     pub fn new(libc: Libc) -> Self {
         Self {
             libc,
-            format_order: vec![Format::Tar, Format::Zip, Format::Raw, Format::AppImage],
+            format_order: vec![
+                Format::Archive(ArchiveKind::TarGz),
+                Format::Archive(ArchiveKind::Tgz),
+                Format::Archive(ArchiveKind::TarXz),
+                Format::Archive(ArchiveKind::TarBz2),
+                Format::Archive(ArchiveKind::Zip),
+                Format::Raw,
+                Format::AppImage,
+            ],
         }
     }
 }
@@ -67,6 +80,22 @@ pub enum SelectionNote {
     /// The winner names nothing at all on this dimension, so binto is trusting the
     /// publisher rather than verifying a marker.
     Unspecified { dimension: &'static str },
+}
+
+/// One line explaining what the release could not give you.
+impl std::fmt::Display for SelectionNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fallback {
+                dimension,
+                wanted,
+                got,
+            } => write!(f, "{dimension}: {got} (preferred {wanted} not available)"),
+            Self::Unspecified { dimension } => {
+                write!(f, "{dimension}: not stated by the asset name")
+            }
+        }
+    }
 }
 
 /// A candidate placed on the preference tiers.
@@ -228,6 +257,22 @@ mod tests {
             size: 1024,
             content_type: "application/octet-stream".to_string(),
         }
+    }
+
+    #[test]
+    fn an_unmet_libc_preference_reads_as_a_fallback() {
+        let note = SelectionNote::Fallback {
+            dimension: "libc",
+            wanted: "gnu",
+            got: "musl",
+        };
+        assert_eq!(note.to_string(), "libc: musl (preferred gnu not available)");
+    }
+
+    #[test]
+    fn an_unstated_dimension_says_so() {
+        let note = SelectionNote::Unspecified { dimension: "arch" };
+        assert_eq!(note.to_string(), "arch: not stated by the asset name");
     }
 
     /// Filter then rank, as `match_asset` does — tests state release contents, not
