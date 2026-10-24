@@ -101,3 +101,11 @@ jobs:
             artifacts/*.tar.gz
             SHA256SUMS
           generate_release_notes: true
+
+  docs:
+    name: Publish docs
+    needs: release
+    permissions:
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs.yml

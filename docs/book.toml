@@ -1,0 +1,13 @@
+[book]
+title = "binto"
+description = "A user-land binary package manager for GitHub releases"
+authors = ["Ardnys"]
+language = "en"
+src = "src"
+
+[build]
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/Ardnys/binto"
+edit-url-template = "https://github.com/Ardnys/binto/edit/master/docs/{path}"
