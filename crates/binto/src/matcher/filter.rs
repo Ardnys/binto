@@ -2,7 +2,7 @@
 //!
 //! An asset either *can* be installed on this host or it cannot. Nothing here expresses a
 //! preference — a foreign architecture is not a weak signal to be outweighed, it is
-//! disqualifying. Preferences live in [`super::rank`].
+//! disqualifying. Preferences live in [`super::rank()`].
 
 use tracing::debug;
 
@@ -61,7 +61,7 @@ impl RejectReason {
 /// An asset that cleared every hard filter, carrying the facts ranking needs.
 ///
 /// The fields are flat and total: by construction this asset is installable, so there is
-/// no `Option` to unwrap and no inapplicable variant for [`super::rank`] to consider.
+/// no `Option` to unwrap and no inapplicable variant for [`super::rank`()] to consider.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub asset: Asset,

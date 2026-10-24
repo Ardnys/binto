@@ -47,7 +47,7 @@ struct Cli {
     #[arg(long, default_value = "gnu")]
     libc: String,
 
-    /// Results JSONL path [default: results-<arch>-<libc>.jsonl]
+    /// Results JSONL path [default: results-{arch}-{libc}.jsonl]
     #[arg(short, long)]
     output: Option<PathBuf>,
 

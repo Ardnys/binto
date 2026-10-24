@@ -12,7 +12,7 @@ use crate::output::{print_info, print_warning};
 pub struct SelectedAsset {
     pub asset: Asset,
     /// The stem to install under, set only when the release ships several distinct
-    /// binaries. `None` means the repo-derived name is correct — see [`Selection::variant`].
+    /// binaries. `None` means the repo-derived name is correct.
     pub variant: Option<String>,
 }
 

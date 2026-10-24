@@ -325,7 +325,7 @@ const UNSUPPORTED_ARCHIVES: &[(&str, &str)] = &[
     (".lz4", "lz4"),
 ];
 
-/// How an installable asset is packaged. Ranked by [`super::rank`]; every variant here is
+/// How an installable asset is packaged. Ranked by [`super::rank()`]; every variant here is
 /// something the installer can open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
