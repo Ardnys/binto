@@ -14,7 +14,7 @@ binto update --all
 
 ## Install
 
-Download the latest release for your platform from the [releases page](../../releases/latest), extract, and place the binary on your `PATH`:
+Download the latest release for your platform from the [releases page](https://github.com/Ardnys/binto/releases/latest), extract, and place the binary on your `PATH`:
 
 ```sh
 tar -xzf binto-*-x86_64-unknown-linux-gnu.tar.gz
@@ -30,208 +30,17 @@ binto update binto
 
 ---
 
-## Usage
+## Documentation
 
-### `binto install <repo>`
+The user guide lives in [`docs/`](docs/src/SUMMARY.md) and is built with
+[mdBook](https://rust-lang.github.io/mdBook/): `mdbook serve docs` previews it locally.
 
-Fetch releases for a GitHub repository, pick a release and asset interactively, download, verify checksum, and install to `~/.local/bin`.
-
-```sh
-binto install BurntSushi/ripgrep
-binto i https://github.com/cli/cli      # aliased to i, to save some keys
-binto i sharkdp/fd --prerelease         # include pre-releases
-binto i sharkdp/bat -t v0.24.0          # pin to a specific release tag
-binto i junegunn/fzf --to ~/bin         # install into a specific directory
-binto i BurntSushi/ripgrep -a rg        # install under a custom binary name
-```
-
-`<repo>` accepts `owner/repo` or any `github.com` URL (with or without scheme, trailing paths are ignored). `binto i` is a shorthand alias for `binto install`.
-
-Pass `--to <path>` to install into a directory other than the configured `install_dir` (a leading `~` is expanded). The choice is recorded in the tool's install path, so later `binto update`s reinstall it there too. It's a local override and is not written to the manifest.
-
-Pass `-a/--alias <name>` to install the binary under a custom name instead of the repo-derived default. For example, `binto install BurntSushi/ripgrep -a rg` installs `rg`. The alias becomes the installed filename and the name binto tracks it by (`binto update rg`, `binto remove rg`), and is recorded in the manifest so `binto sync` reproduces it on another machine. The binary *inside* the archive is still auto-detected as usual; the alias only renames the installed file.
-
-Pass `-t/--tag <tag>` to install (and pin) an exact release instead of picking interactively. A pinned tool is **locked**: `binto update` skips it until you explicitly unpin it with `binto update <name> --force` (see below). To move a pin to a different tag, re-run `binto install <repo> -t <newtag>` on the already-managed tool, which reinstalls at that tag and updates the pin in place. Every install records the tool in the [manifest](#manifest).
-
-### `binto update [name] [--all] [-f/--force]`
-
-Update one or all managed tools to their latest release. Pinned tools are skipped by default. Use `-f/--force` on a named tool to update it to the latest release anyway, which clears its pin (the tool tracks latest again afterwards). `--force` has no effect with `--all` — pinned tools stay locked there; name the tool to force it.
-
-```sh
-binto update ripgrep
-binto update --all
-binto update bat --force   # update a pinned tool to latest and clear its pin
-```
-
-### `binto check [--json]`
-
-Check for available updates without installing anything. Checks run concurrently, and pinned tools are skipped. Exits with code `1` if any updates are available, making it useful in scripts.
-
-```sh
-binto check
-binto check --json | jq '.[] | select(.update_available)'
-```
-
-### `binto list [--json]`
-
-List all managed tools with their installed version and last-checked timestamp.
-
-```sh
-binto list
-binto list --json
-```
-
-### `binto adopt <path> <repo>`
-
-Register a binary that is already on disk (installed by a package manager, curl script, etc.) under binto management without moving or reinstalling it. Subsequent `binto update` calls will update it in place.
-
-```sh
-binto adopt ~/.local/bin/fzf junegunn/fzf
-binto adopt /usr/local/bin/lazygit jesseduffield/lazygit
-```
-
-### `binto remove [-y] <name>`
-
-Uninstall a binary and remove it from binto state. `-y` to skip confirmation prompt
-
-```sh
-binto remove ripgrep
-```
-
-### `binto sync`
-
-Install every tool listed in the [manifest](#manifest) that is missing from local state. Pinned entries install their exact tag; the rest install the latest release. Tools already installed are left untouched. This is how you reproduce your toolset on a new machine after copying over `manifest.toml`.
-
-```sh
-binto sync
-```
-
-Pass `--prune` to also make local state match the manifest in the other direction: any managed tool whose repo is **not** in the manifest is uninstalled (its binary deleted and the tool untracked, mirroring `binto remove`). The tools to be removed are listed and confirmed first; add `-y/--yes` to skip the prompt for unattended runs. The manifest is the source of truth, so pruning against an empty manifest removes everything binto manages.
-
-```sh
-binto sync --prune        # install missing, then offer to remove extras
-binto sync --prune -y     # ...without the confirmation prompt
-```
-
-### `binto clean`
-
-Remove binto's download cache at `~/.cache/binto`. Installs already clean up after themselves, but interrupted or failed runs can leave partial downloads and extraction directories behind. 
-
-```sh
-binto clean
-```
-
-### `binto setup-timer`
-
-Write a systemd user service and timer that runs `binto check` on a schedule and optionally enable it immediately.
-
-```sh
-binto setup-timer
-```
-
-### `binto disable-timer`
-
-Disable and remove the binto timer unit created by `binto setup-timer`.
-
-```sh
-binto disable-timer
-```
+- [Installing tools](docs/src/guide/installing.md)
+- [Updating and pinning](docs/src/guide/updating.md)
+- [The manifest and sync](docs/src/guide/manifest.md)
+- [Configuration](docs/src/reference/configuration.md)
 
 ---
-
-## Configuration
-
-Config is stored at `~/.config/binto/config.toml` and created with defaults on first run.
-
-```toml
-install_dir = "~/.local/bin"
-github_token = ""           # or set GITHUB_TOKEN env var
-include_prereleases = false
-check_interval_hours = 24
-notify = "terminal"         # "terminal" | "desktop" | "none"
-# notifications have not been implemented yet though
-```
-
-**`GITHUB_TOKEN`** — unauthenticated requests are limited to 60/hour. A token raises this to 5000/hour. Create one at <https://github.com/settings/tokens> (no scopes needed for public repos).
-
-**`BINTO_CONCURRENT_DOWNLOADS`** — how many release lookups and downloads binto runs at once (default 8).
-
----
-
-
-## Manifest
-
-`~/.config/binto/manifest.toml` is a declarative, portable list of the tools binto manages. It is intended to be committed it to your dotfiles  and replay it on another machine to get the same setup.
-
-`binto install`, `binto remove`, and `binto adopt` keep it in sync automatically. You can also hand-edit it, and your edits survive: binto rewrites only the one entry it's changing, so **comments, ordering, blank lines, and commented-out entries are preserved** across automatic updates.
-
-Each repo is a key under `[tools]`. Its value is either a tag string (`"latest"` tracks the newest release, anything else pins to that tag) or a table with `tag` and/or `alias`:
-
-```toml
-# You can add this to your dotfiles
-[tools]
-"sharkdp/bat" = "latest"
-"cli/cli" = "v2.45.0"                 # pinned to a specific release tag
-"BurntSushi/ripgrep" = { alias = "rg" }   # install/track the binary under this name
-
-# comment an entry out to keep it around without syncing it
-# "junegunn/fzf" = "latest"
-
-# a repo shipping several binaries lists them under `binaries`
-[tools."ozwaldorf/lutgen-rs".binaries]
-lutgen-cli = "latest"
-lutgen-studio = { tag = "lutgen-studio-v0.3.0", alias = "lutgen-gui" }
-```
-
-Binaries of a multi-binary repo are named by the stem read from the asset name (for example `lutgen-cli` from `lutgen-cli-v1.1.1-x86_64-unknown-linux-gnu`), and binto only writes `binaries` when the release actually ships more than one. Once `binaries` is present, `tag` and `alias` are read per binary only; a repo-level `tag`/`alias` next to it is ignored. A pin applies to one binary, not the whole repo: pinning `lutgen-studio` leaves `lutgen-cli` tracking latest, and `binto remove` drops only the binary you remove (the repo entry goes with its last binary).
-
-Comment out an entry to disable it without losing it: `binto sync` (and `--prune`) ignore commented-out tools. An inline comment on a tag you later re-pin via binto is kept too.
-
-Run `binto sync` to install everything in the manifest that isn't installed yet. A tag both selects the version `sync` installs and locks the tool so `binto update` skips it. `binto sync --prune` removes installed tools the manifest no longer lists.
-
---- 
-
-
-## Logging
-
-Every run writes a detailed, rotating log to `~/.local/share/binto/logs/` (daily files, the last 7 kept). The install pipeline is instrumented with spans, so a failed install is traceable to the exact phase. 
-
-Terminal verbosity is controlled per-invocation; the file log stays at `debug` regardless so there's always a post-mortem trail:
-
-```sh
-binto -v update --all     # show debug detail on the terminal (-vv for trace)
-binto -q sync             # only warnings and errors on the terminal
-```
-
-`binto_LOG` overrides the **file** log filter using [`tracing` directives](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) (e.g. `binto_LOG=binto=trace`); `binto_LOG=off` disables the file log entirely. Human-facing messages go to stderr, leaving stdout clean for piping `--json` output.
-
----
-
-## How asset selection works
-
-binto filters out checksums, source archives, Windows/macOS assets, `.deb`/`.rpm` packages, then scores remaining assets by:
-
-- Architecture match (`x86_64`, `aarch64`, `armv7`, `i686` and common synonyms like `amd64`, `arm64`)
-- `linux` keyword presence
-- libc preference (`gnu` > `musl`)
-- Format preference (raw binary > tar > zip > AppImage)
-
-If the top candidate's score is sufficiently ahead of the second, it is selected automatically. Otherwise an interactive picker is shown. The selected asset's name pattern is saved so future updates skip the picker entirely.
-
----
-
-## State files
-
-| Path | Purpose |
-|------|---------|
-| `~/.config/binto/config.toml` | User configuration |
-| `~/.config/binto/manifest.toml` | Declarative, portable list of managed tools (repo, optional pinned tag / alias, per-binary for multi-binary repos) |
-| `~/.local/share/binto/state.toml` | Installed tools, versions, checksums, ETags |
-| `~/.local/share/binto/logs/` | Rotating debug logs (one per day, last 7 kept) |
-| `~/.cache/binto/` | Download cache (cleaned after each install; `binto clean` clears any leftovers) |
-
----
-
 
 ## Roadmap
 - [x] aliasing with -a / --alias, for ripgrep for example. should be persisted in manifest as well.

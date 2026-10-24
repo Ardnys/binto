@@ -1,0 +1,45 @@
+name: Docs
+
+# Publishes the user guide to GitHub Pages. Called by release.yml after a release is
+# published, so the site always describes the released binary rather than master. Run it by
+# hand to republish (e.g. after a docs-only fix).
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch to publish (defaults to the latest release tag)"
+        required: false
+
+jobs:
+  publish:
+    name: Publish book
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Pick the latest release tag
+        if: github.event_name == 'workflow_dispatch' && inputs.ref == ''
+        run: git checkout "$(git describe --tags --abbrev=0 --match 'v*')"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
+      - run: mdbook build docs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
