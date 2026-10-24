@@ -73,6 +73,8 @@ commit_parsers = [
   # Merges carry no content of their own; their branch's commits are listed individually.
   { message = "^Merge (pull request|branch|remote-tracking branch)", skip = true },
   { message = "^chore(\\(release\\))?: (bump|release)", skip = true },
+  # Claude Code skills and agents are dev tooling, whatever type the commit was given.
+  { message = "^\\w+\\(claude\\)", group = "<!-- 09 -->⚙️ Miscellaneous" },
   { message = "^feat", group = "<!-- 00 -->🚀 Features" },
   { message = "^fix", group = "<!-- 01 -->🐛 Bug Fixes" },
   { message = "^perf", group = "<!-- 02 -->⚡ Performance" },
